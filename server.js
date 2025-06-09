@@ -16,22 +16,110 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key'; // Use environme
 
 let totpSecrets = {};
 
-// Create MySQL connection
-const connection = mysql.createConnection({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT,
-});
+// Create MySQL connection with reconnection handling
+let connection;
 
-connection.connect((err) => {
-  if (err) {
-    console.error('Error connecting to MySQL:', err);
-    return;
+function createConnection() {
+  connection = mysql.createConnection({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    port: process.env.DB_PORT,
+    acquireTimeout: 60000,
+    timeout: 60000,
+    reconnect: true,
+    idleTimeout: 300000,
+    maxReconnects: 3,
+    reconnectDelay: 2000
+  });
+
+  connection.connect((err) => {
+    if (err) {
+      console.error('Error connecting to MySQL:', err);
+      setTimeout(createConnection, 2000); // Retry connection after 2 seconds
+      return;
+    }
+    console.log('Connected to MySQL database');
+  });
+
+  connection.on('error', (err) => {
+    console.error('MySQL connection error:', err);
+    if (err.code === 'PROTOCOL_CONNECTION_LOST' || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT') {
+      console.log('Reconnecting to MySQL...');
+      createConnection();
+    } else {
+      throw err;
+    }
+  });
+}
+
+// Helper function to ensure connection is available
+function ensureConnection(callback) {
+  if (!connection || connection.state === 'disconnected') {
+    createConnection();
+    // Wait a bit for connection to establish
+    setTimeout(() => {
+      callback();
+    }, 1000);
+  } else {
+    callback();
   }
-  console.log('Connected to MySQL database');
-});
+}
+
+// Wrapper function for database queries with reconnection handling
+function queryDatabase(query, params, callback) {
+  if (typeof params === 'function') {
+    callback = params;
+    params = [];
+  }
+
+  function executeQuery() {
+    if (!connection || connection.state === 'disconnected') {
+      createConnection();
+      setTimeout(() => executeQuery(), 1000);
+      return;
+    }
+
+    connection.query(query, params, (err, results) => {
+      if (err && (err.code === 'PROTOCOL_CONNECTION_LOST' || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT')) {
+        console.log('Connection lost, reconnecting...');
+        createConnection();
+        setTimeout(() => executeQuery(), 1000);
+        return;
+      }
+      callback(err, results);
+    });
+  }
+
+  executeQuery();
+}
+
+// Wrapper function for transactions
+function executeTransaction(transactionCallback) {
+  function startTransaction() {
+    if (!connection || connection.state === 'disconnected') {
+      createConnection();
+      setTimeout(() => startTransaction(), 1000);
+      return;
+    }
+
+    connection.beginTransaction((err) => {
+      if (err && (err.code === 'PROTOCOL_CONNECTION_LOST' || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT')) {
+        console.log('Connection lost during transaction start, reconnecting...');
+        createConnection();
+        setTimeout(() => startTransaction(), 1000);
+        return;
+      }
+      transactionCallback(err, connection);
+    });
+  }
+
+  startTransaction();
+}
+
+// Initialize connection
+createConnection();
 
 // Utility function to check and update project completion status
 const checkAndUpdateProjectCompletion = (projectId, callback) => {
@@ -41,10 +129,9 @@ const checkAndUpdateProjectCompletion = (projectId, callback) => {
     FROM project_members 
     WHERE project_id = ? AND role != 'project_owner'
   `;
-
   console.log(`Checking project completion for project ID: ${projectId}`);
   
-  connection.query(getMembersQuery, [projectId], (err, members) => {
+  queryDatabase(getMembersQuery, [projectId], (err, members) => {
     if (err) {
       console.error('Error checking project members:', err);
       return callback(err, false);
@@ -71,7 +158,7 @@ const checkAndUpdateProjectCompletion = (projectId, callback) => {
         WHERE id = ?
       `;
 
-      connection.query(updateProjectQuery, [projectId], (err, result) => {
+      queryDatabase(updateProjectQuery, [projectId], (err, result) => {
         if (err) {
           console.error('Error updating project status:', err);
           return callback(err, false);
@@ -150,7 +237,7 @@ app.use('/uploads', (req, res, next) => {
     const { email } = req.body;
     const query = 'SELECT * FROM users WHERE email = ?'; // Replace 'users' with your table name
   
-    connection.query(query, [email], (err, results) => {
+    queryDatabase(query, [email], (err, results) => {
       if (err) {
         console.error('Error checking email:', err);
         return res.status(500).json({ error: 'Internal Server Error' });
@@ -204,7 +291,7 @@ app.use('/uploads', express.static(uploadsDir));
     const { email } = req.body;
     const query = 'SELECT * FROM users WHERE email = ?'; // Replace 'users' with your table name
   
-    connection.query(query, [email], (err, results) => {
+    queryDatabase(query, [email], (err, results) => {
       if (err) {
         console.error('Error checking email:', err);
         return res.status(500).json({ error: 'Internal Server Error' });
@@ -228,7 +315,7 @@ app.post('/register', upload.single('profilePicture'), (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `;
 
-  connection.query(userQuery, [name, email, password, organization, region, profilePicture, null], (err, results) => {
+  queryDatabase(userQuery, [name, email, password, organization, region, profilePicture, null], (err, results) => {
     if (err) {
       console.error('Error inserting data into the users table:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -240,7 +327,7 @@ app.post('/register', upload.single('profilePicture'), (req, res) => {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
-  connection.query(deviceQuery, [userId, device, cpu, gpu, ram, capacity, motherboard, psu], (err, deviceResult) => {
+  queryDatabase(deviceQuery, [userId, device, cpu, gpu, ram, capacity, motherboard, psu], (err, deviceResult) => {
       if (err) {
         console.error('Error inserting data into the user_devices table:', err);
         return res.status(500).json({ error: 'Database error' });
@@ -254,7 +341,7 @@ app.post('/register', upload.single('profilePicture'), (req, res) => {
         UPDATE users SET current_device_id = ? WHERE id = ?
       `;
       
-      connection.query(updateUserQuery, [deviceId, userId], (err) => {
+      queryDatabase(updateUserQuery, [deviceId, userId], (err) => {
         if (err) {
           console.error('Error updating user with current device ID:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -275,7 +362,7 @@ app.post('/login', (req, res) => {
     SELECT id, name, email, current_device_id FROM users WHERE email = ? AND password = ?
   `;
 
-  connection.query(userQuery, [email, password], (err, results) => {
+  queryDatabase(userQuery, [email, password], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -289,7 +376,7 @@ app.post('/login', (req, res) => {
         SELECT id, device, cpu, gpu, ram, capacity, motherboard, psu FROM user_devices WHERE user_id = ?
       `;
 
-      connection.query(deviceQuery, [user.id], (err, deviceResults) => {
+      queryDatabase(deviceQuery, [user.id], (err, deviceResults) => {
         if (err) {
           console.error('Error querying the user_devices table:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -302,7 +389,7 @@ app.post('/login', (req, res) => {
           const cpuQuery = 'SELECT avg_watt_usage FROM cpus WHERE model = ?';
           const gpuQuery = 'SELECT avg_watt_usage FROM gpus WHERE model = ?';
 
-          connection.query(cpuQuery, [currentDevice.cpu], (err, cpuResult) => {
+          queryDatabase(cpuQuery, [currentDevice.cpu], (err, cpuResult) => {
             if (err) {
               console.error('Error querying CPU database:', err);
               return res.status(500).json({ error: 'Database error' });
@@ -310,7 +397,7 @@ app.post('/login', (req, res) => {
 
             currentDevice.cpuAvgWattUsage = cpuResult[0]?.avg_watt_usage || null;
 
-            connection.query(gpuQuery, [currentDevice.gpu], (err, gpuResult) => {
+            queryDatabase(gpuQuery, [currentDevice.gpu], (err, gpuResult) => {
               if (err) {
                 console.error('Error querying GPU database:', err);
                 return res.status(500).json({ error: 'Database error' });
@@ -385,7 +472,7 @@ app.get('/user', authenticateToken, (req, res) => {
     WHERE id = ?
   `;
 
-  connection.query(userQuery, [userId], (err, userResults) => {
+  queryDatabase(userQuery, [userId], (err, userResults) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -402,7 +489,7 @@ app.get('/user', authenticateToken, (req, res) => {
         WHERE user_id = ?
       `;
 
-      connection.query(deviceQuery, [user.id], (err, deviceResults) => {
+      queryDatabase(deviceQuery, [user.id], (err, deviceResults) => {
         if (err) {
           console.error('Error querying the user_devices table:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -452,7 +539,7 @@ app.post('/user_history', authenticateToken, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
-  connection.query(query, [
+  queryDatabase(query, [
     userId, organization, projectName, projectDescription, 
     sessionDuration, carbonEmit, projectStage, status,
     stage_duration, stage_start_date, stage_due_date,
@@ -489,7 +576,7 @@ app.get('/user_projects', authenticateToken, (req, res) => {
     WHERE user_id = ? AND status <> 'Complete'
   `;
 
-  connection.query(query, [userId], (err, results) => {
+  queryDatabase(query, [userId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -512,7 +599,7 @@ app.get('/all_user_projects', authenticateToken, (req, res) => {
   console.log('Executing query:', query);
   console.log('With parameters:', [userId]);
 
-  connection.query(query, [userId], (err, results) => {
+  queryDatabase(query, [userId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error', details: err.message });
@@ -542,7 +629,7 @@ app.get('/profile_display_projects', authenticateToken, (req, res) => {
     ORDER BY created_at DESC
   `;
 
-  connection.query(query, [userId], (err, results) => {
+  queryDatabase(query, [userId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -562,7 +649,7 @@ app.get('/user_project_display', authenticateToken, (req, res) => {
     WHERE user_id = ? AND status
   `;
 
-  connection.query(query, [userId], (err, results) => {
+  queryDatabase(query, [userId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -615,7 +702,7 @@ app.put('/update_project/:id', authenticateToken, (req, res) => {
     WHERE id = ? AND (user_id = ? OR id IN (SELECT project_id FROM project_members WHERE user_id = ?))
   `;
 
-  connection.query(query, [
+  queryDatabase(query, [
     projectName,
     projectDescription,
     projectStage || 'Design: Creating the software architecture',
@@ -656,7 +743,7 @@ app.post('/user_Update', authenticateToken, (req, res) => {
     WHERE id = ? AND (user_id = ? OR id IN (SELECT project_id FROM project_members WHERE user_id = ?)) AND project_name = ? AND project_description = ? AND status <> 'Complete'
   `;
 
-  connection.query(
+  queryDatabase(
     query,
     [sessionDuration, carbonEmissions, projectStage, projectId, userId, userId, projectName, projectDescription],
     (err, results) => {
@@ -685,7 +772,7 @@ app.delete('/delete_project/:id', authenticateToken, (req, res) => {
     DELETE FROM notifications WHERE project_id = ?;
   `;
 
-  connection.query(deleteNotificationsQuery, [projectId], (err, results) => {
+  queryDatabase(deleteNotificationsQuery, [projectId], (err, results) => {
     if (err) {
       console.error('Error deleting notifications from the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -696,7 +783,7 @@ app.delete('/delete_project/:id', authenticateToken, (req, res) => {
       DELETE FROM project_members WHERE project_id = ?;
     `;
 
-    connection.query(deleteProjectMembersQuery, [projectId], (err, results) => {
+    queryDatabase(deleteProjectMembersQuery, [projectId], (err, results) => {
       if (err) {
         console.error('Error deleting project members from the database:', err);
         return res.status(500).json({ error: 'Database error' });
@@ -707,7 +794,7 @@ app.delete('/delete_project/:id', authenticateToken, (req, res) => {
         DELETE FROM user_history WHERE id = ? AND user_id = ?;
       `;
 
-      connection.query(deleteProjectQuery, [projectId, userId], (err, results) => {
+      queryDatabase(deleteProjectQuery, [projectId, userId], (err, results) => {
         if (err) {
           console.error('Error deleting project from the database:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -730,7 +817,7 @@ app.put('/archive_project/:id', authenticateToken, (req, res) => {
     WHERE id = ? AND user_id = ?;
   `;
 
-  connection.query(archiveProjectQuery, [projectId, userId], (err, results) => {
+  queryDatabase(archiveProjectQuery, [projectId, userId], (err, results) => {
     if (err) {
       console.error('Error archiving project in the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -741,6 +828,15 @@ app.put('/archive_project/:id', authenticateToken, (req, res) => {
     } else {
       res.status(404).json({ error: 'Project not found or you do not have permission to archive this project' });
     }
+  });
+});
+
+// Root route
+app.get('/', (req, res) => {
+  res.status(200).json({ 
+    message: 'Emission Server API is running',
+    status: 'OK',
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -764,7 +860,7 @@ app.post('/find_project', authenticateToken, (req, res) => {
     WHERE project_name = ? AND project_description = ? AND (user_id = ? OR id IN (SELECT project_id FROM project_members WHERE user_id = ?)) AND status <> 'Complete'
   `;
 
-  connection.query(query, [projectName, projectDescription, userId, userId], (err, results) => {
+  queryDatabase(query, [projectName, projectDescription, userId, userId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -796,7 +892,7 @@ app.post('/check_existing_projectname', authenticateToken, (req, res) => {
     WHERE project_name = ? AND user_id = ?
   `;
 
-  connection.query(query, [projectName, userId], (err, results) => {
+  queryDatabase(query, [projectName, userId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -822,7 +918,7 @@ app.post('/calculate_emissions', authenticateToken, async (req, res) => {
   try {
     // Fetch user's current device ID and region
     const deviceIdQuery = `SELECT current_device_id, region FROM users WHERE id = ?`;
-    connection.query(deviceIdQuery, [userId], (err, deviceIdResults) => {
+    queryDatabase(deviceIdQuery, [userId], (err, deviceIdResults) => {
       if (err) {
         console.error('Error fetching current device ID:', err);
         return res.status(500).json({ error: 'Database error' });
@@ -837,7 +933,7 @@ app.post('/calculate_emissions', authenticateToken, async (req, res) => {
 
       // Fetch current device details
       const userQuery = `SELECT cpu, gpu, ram, psu FROM user_devices WHERE id = ?`;
-      connection.query(userQuery, [currentDeviceId], async (err, userResults) => {
+      queryDatabase(userQuery, [currentDeviceId], async (err, userResults) => {
         if (err) {
           console.error('Error fetching user details:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -879,7 +975,7 @@ app.post('/calculate_emissions', authenticateToken, async (req, res) => {
             WHERE id = ? AND (user_id = ? OR id IN (SELECT project_id FROM project_members WHERE user_id = ?))
           `;
 
-          connection.query(updateProjectQuery, [carbonEmissions, projectId, userId, userId], (err, results) => {
+          queryDatabase(updateProjectQuery, [carbonEmissions, projectId, userId, userId], (err, results) => {
             if (err) {
               console.error('Error updating project emissions:', err);
               return res.status(500).json({ error: 'Database error' });
@@ -903,7 +999,7 @@ app.get('/cpu_usage', (req, res) => {
   const { model } = req.query;
   const query = 'SELECT avg_watt_usage FROM cpus WHERE model = ?';
   
-  connection.query(query, [model], (err, results) => {
+  queryDatabase(query, [model], (err, results) => {
     if (err) {
       console.error('Error querying CPU database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -922,7 +1018,7 @@ app.get('/gpu_usage', (req, res) => {
   const { model } = req.query;
   const query = 'SELECT avg_watt_usage FROM gpus WHERE model = ?';
   
-  connection.query(query, [model], (err, results) => {
+  queryDatabase(query, [model], (err, results) => {
     if (err) {
       console.error('Error querying GPU database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -944,7 +1040,7 @@ app.post('/calculate_emissionsM', authenticateToken, async (req, res) => {
   try {
     // Fetch user's current device ID and region
     const deviceIdQuery = `SELECT current_device_id, region FROM users WHERE id = ?`;
-    connection.query(deviceIdQuery, [userId], (err, deviceIdResults) => {
+    queryDatabase(deviceIdQuery, [userId], (err, deviceIdResults) => {
       if (err) {
         console.error('Error fetching current device ID:', err);
         return res.status(500).json({ error: 'Database error' });
@@ -959,7 +1055,7 @@ app.post('/calculate_emissionsM', authenticateToken, async (req, res) => {
 
       // Fetch current device details
       const userQuery = `SELECT cpu, gpu, ram, psu FROM user_devices WHERE id = ?`;
-      connection.query(userQuery, [currentDeviceId], async (err, userResults) => {
+      queryDatabase(userQuery, [currentDeviceId], async (err, userResults) => {
         if (err) {
           console.error('Error fetching user details:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -1000,7 +1096,7 @@ app.post('/calculate_emissionsM', authenticateToken, async (req, res) => {
             WHERE id = ? AND user_id = ?
           `;
 
-          connection.query(updateQuery, [sessionDuration, carbonEmissions, projectId, userId], (err, updateResults) => {
+          queryDatabase(updateQuery, [sessionDuration, carbonEmissions, projectId, userId], (err, updateResults) => {
             if (err) {
               console.error('Error updating project data:', err);
               return res.status(500).json({ error: 'Database error' });
@@ -1026,7 +1122,7 @@ app.get('/cpum_usage', (req, res) => {
   const { model } = req.query;
   const query = 'SELECT cpu_watts AS avg_watt_usage FROM cpusm WHERE model = ?';
   
-  connection.query(query, [model], (err, results) => {
+  queryDatabase(query, [model], (err, results) => {
     if (err) {
       console.error('Error querying CPU database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1045,7 +1141,7 @@ app.get('/gpum_usage', (req, res) => {
   const { model } = req.query;
   const query = 'SELECT gpu_watts AS avg_watt_usage FROM gpusm WHERE model = ?';
   
-  connection.query(query, [model], (err, results) => {
+  queryDatabase(query, [model], (err, results) => {
     if (err) {
       console.error('Error querying GPU database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1064,7 +1160,7 @@ app.get('/ram_usage', (req, res) => {
   const { model } = req.query;
   const query = 'SELECT avg_watt_usage FROM ram WHERE ddr_generation = ?';
   
-  connection.query(query, [model], (err, results) => {
+  queryDatabase(query, [model], (err, results) => {
     if (err) {
       console.error('Error querying CPU database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1082,7 +1178,7 @@ app.get('/ram_usage', (req, res) => {
 app.get('/cpu-options', (req, res) => {
   const query = 'SELECT manufacturer, series, model FROM cpus';
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching GPU options:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1101,7 +1197,7 @@ app.get('/cpu-options', (req, res) => {
 app.get('/gpu-options', (req, res) => {
   const query = 'SELECT manufacturer, series, model FROM gpus';
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching GPU options:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1120,7 +1216,7 @@ app.get('/gpu-options', (req, res) => {
 app.get('/cpu-options-mobile', (req, res) => {
   const query = 'SELECT generation, model FROM cpusm';
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching CPUm options:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1139,7 +1235,7 @@ app.get('/cpu-options-mobile', (req, res) => {
 app.get('/gpu-options-mobile', (req, res) => {
   const query = 'SELECT manufacturer, model FROM gpusm';
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching GPUm options:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1165,7 +1261,7 @@ app.get('/displayuser', authenticateToken, (req, res) => {
     WHERE email = ?
   `;
 
-  connection.query(userQuery, [email], (err, userResults) => {
+  queryDatabase(userQuery, [email], (err, userResults) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1182,7 +1278,7 @@ app.get('/displayuser', authenticateToken, (req, res) => {
         WHERE user_id = ? AND id = ?
       `;
 
-      connection.query(deviceQuery, [user.id, user.current_device_id], (err, deviceResults) => {
+      queryDatabase(deviceQuery, [user.id, user.current_device_id], (err, deviceResults) => {
         if (err) {
           console.error('Error querying the user_devices table:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -1204,7 +1300,7 @@ app.get('/displayuser', authenticateToken, (req, res) => {
           const cpuQuery = 'SELECT avg_watt_usage FROM cpus WHERE model = ?';
           const gpuQuery = 'SELECT avg_watt_usage FROM gpus WHERE model = ?';
 
-          connection.query(cpuQuery, [device.cpu], (err, cpuResults) => {
+          queryDatabase(cpuQuery, [device.cpu], (err, cpuResults) => {
             if (err) {
               console.error('Error querying CPU database:', err);
               return res.status(500).json({ error: 'CPU database error' });
@@ -1214,7 +1310,7 @@ app.get('/displayuser', authenticateToken, (req, res) => {
               specifications.CPU_avg_watt_usage = cpuResults[0].avg_watt_usage;
             }
 
-            connection.query(gpuQuery, [device.gpu], (err, gpuResults) => {
+            queryDatabase(gpuQuery, [device.gpu], (err, gpuResults) => {
               if (err) {
                 console.error('Error querying GPU database:', err);
                 return res.status(500).json({ error: 'GPU database error' });
@@ -1247,7 +1343,7 @@ app.get('/displayuserM', authenticateToken, (req, res) => {
     WHERE email = ?
   `;
 
-  connection.query(userQuery, [email], (err, userResults) => {
+  queryDatabase(userQuery, [email], (err, userResults) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1264,7 +1360,7 @@ app.get('/displayuserM', authenticateToken, (req, res) => {
         WHERE user_id = ? AND id = ?
       `;
 
-      connection.query(deviceQuery, [user.id, user.current_device_id], (err, deviceResults) => {
+      queryDatabase(deviceQuery, [user.id, user.current_device_id], (err, deviceResults) => {
         if (err) {
           console.error('Error querying the user_devices table:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -1286,7 +1382,7 @@ app.get('/displayuserM', authenticateToken, (req, res) => {
           const cpuQuery = 'SELECT cpu_watts FROM cpusm WHERE model = ?';
           const gpuQuery = 'SELECT gpu_watts FROM gpusm WHERE model = ?';
 
-          connection.query(cpuQuery, [device.cpu], (err, cpuResults) => {
+          queryDatabase(cpuQuery, [device.cpu], (err, cpuResults) => {
             if (err) {
               console.error('Error querying CPU database:', err);
               return res.status(500).json({ error: 'CPU database error' });
@@ -1296,7 +1392,7 @@ app.get('/displayuserM', authenticateToken, (req, res) => {
               specifications.cpu_watts = cpuResults[0].cpu_watts;
             }
 
-            connection.query(gpuQuery, [device.gpu], (err, gpuResults) => {
+            queryDatabase(gpuQuery, [device.gpu], (err, gpuResults) => {
               if (err) {
                 console.error('Error querying GPU database:', err);
                 return res.status(500).json({ error: 'GPU database error' });
@@ -1326,7 +1422,7 @@ app.get('/checkDeviceType', authenticateToken, (req, res) => {
   // First, get the current_device_id from the users table
   const getCurrentDeviceIdQuery = `SELECT current_device_id FROM users WHERE id = ?`;
 
-  connection.query(getCurrentDeviceIdQuery, [userId], (err, result) => {
+  queryDatabase(getCurrentDeviceIdQuery, [userId], (err, result) => {
     if (err) {
       console.error('Error querying current_device_id from database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1338,7 +1434,7 @@ app.get('/checkDeviceType', authenticateToken, (req, res) => {
       // Now, fetch the device type from user_devices using current_device_id
       const getDeviceQuery = `SELECT device FROM user_devices WHERE id = ?`;
 
-      connection.query(getDeviceQuery, [currentDeviceId], (err, deviceResult) => {
+      queryDatabase(getDeviceQuery, [currentDeviceId], (err, deviceResult) => {
         if (err) {
           console.error('Error querying device type from database:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -1386,7 +1482,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
     LIMIT 1
   `;
 
-  connection.query(getCurrentProjectQuery, [projectId], (err, results) => {
+  queryDatabase(getCurrentProjectQuery, [projectId], (err, results) => {
     if (err) {
       console.error('Error getting current project:', err);
       return res.status(500).json({ error: 'Failed to get current project' });
@@ -1413,7 +1509,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
         ON DUPLICATE KEY UPDATE status = 'Complete', completion_date = NOW()
       `;
       
-      connection.query(completeCurrentStageQuery, [
+      queryDatabase(completeCurrentStageQuery, [
         projectId, 
         userId, 
         currentStage || currentProject.stage
@@ -1432,7 +1528,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
           SET progress_status = 'Stage Complete'
           WHERE project_id = ? AND user_id = ? AND role != 'project_owner'`;
           
-        connection.query(updateUserProgressQuery, [projectId, userId], (err, updateResult) => {
+        queryDatabase(updateUserProgressQuery, [projectId, userId], (err, updateResult) => {
           if (err) {
             return connection.rollback(() => {
               console.error('Error updating user progress:', err);
@@ -1487,7 +1583,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                 (project_id = ? OR project_id IS NULL)
               LIMIT 1`;
             
-            connection.query(checkExistingQuery, [
+            queryDatabase(checkExistingQuery, [
               currentProject.project_name, 
               currentProject.project_description,
               nextProjectStage,
@@ -1510,7 +1606,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                   WHERE project_id = ? AND user_id = ?
                 `;
                 
-                connection.query(checkMembershipQuery, [existingProjectId, userId], (err, membershipResult) => {
+                queryDatabase(checkMembershipQuery, [existingProjectId, userId], (err, membershipResult) => {
                   if (err) {
                     return connection.rollback(() => {
                       console.error('Error checking membership:', err);
@@ -1527,7 +1623,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                       WHERE project_id = ? AND user_id = ?
                     `;
                     
-                    connection.query(addToNextStageQuery, [existingProjectId, nextProjectStage, projectId, userId], (err) => {
+                    queryDatabase(addToNextStageQuery, [existingProjectId, nextProjectStage, projectId, userId], (err) => {
                       if (err) {
                         return connection.rollback(() => {
                           console.error('Error adding to next stage:', err);
@@ -1568,7 +1664,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                       WHERE project_id = ? AND user_id = ?
                     `;
                     
-                    connection.query(updateUserStatusQuery, [existingProjectId, userId], (err) => {
+                    queryDatabase(updateUserStatusQuery, [existingProjectId, userId], (err) => {
                       if (err) {
                         return connection.rollback(() => {
                           console.error('Error updating user status:', err);
@@ -1619,7 +1715,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                   VALUES (?, ?, ?, ?, ?, ?, 'In Progress', 0, 0, ?, ?, ?, ?, ?)
                 `;
                 
-                connection.query(createNextStageQuery, [
+                queryDatabase(createNextStageQuery, [
                   currentProject.owner_id,
                   currentProject.organization,
                   currentProject.project_name,
@@ -1646,7 +1742,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                     SELECT user_id, role FROM project_members WHERE project_id = ?
                   `;
                   
-                  connection.query(transferMembersQuery, [projectId], (err, membersToTransfer) => {
+                  queryDatabase(transferMembersQuery, [projectId], (err, membersToTransfer) => {
                     if (err) {
                       return connection.rollback(() => {
                         console.error('Error getting members to transfer:', err);
@@ -1690,7 +1786,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                       VALUES ?
                     `;
                     
-                    connection.query(addMembersQuery, [memberValues], (err) => {
+                    queryDatabase(addMembersQuery, [memberValues], (err) => {
                       if (err) {
                         return connection.rollback(() => {
                           console.error('Error transferring members:', err);
@@ -1705,7 +1801,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                         WHERE project_id = ? AND progress_status = 'Stage Complete'
                       `;
                       
-                      connection.query(getCompletedUsersQuery, [projectId], (err, completedResult) => {
+                      queryDatabase(getCompletedUsersQuery, [projectId], (err, completedResult) => {
                         if (err) {
                           return connection.rollback(() => {
                             console.error('Error counting completed users:', err);
@@ -1719,7 +1815,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                           WHERE project_id = ?
                         `;
                         
-                        connection.query(totalMembersQuery, [projectId], (err, totalResult) => {
+                        queryDatabase(totalMembersQuery, [projectId], (err, totalResult) => {
                           if (err) {
                             return connection.rollback(() => {
                               console.error('Error counting total users:', err);
@@ -1782,7 +1878,7 @@ app.get('/organization_projects', authenticateToken, (req, res) => {
     WHERE uh.organization = ?
   `;
 
-  connection.query(query, [organization], (err, results) => {
+  queryDatabase(query, [organization], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1801,7 +1897,7 @@ app.get('/user_projects_only', authenticateToken, (req, res) => {
     WHERE user_id = ?
   `;
 
-  connection.query(query, [userId], (err, results) => {
+  queryDatabase(query, [userId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1814,7 +1910,7 @@ app.get('/user_projects_only', authenticateToken, (req, res) => {
 app.get('/ram-options', (req, res) => {
   const query = 'SELECT ddr_generation FROM ram';
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching RAM options:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -1866,7 +1962,7 @@ app.post('/validate-totp', async (req, res) => {
 
   try {
     // Update the password in the database
-    connection.query(
+    queryDatabase(
       'UPDATE users SET password = ? WHERE email = ?',
       [newPassword, email],
       (err, result) => {
@@ -1895,7 +1991,7 @@ app.post('/send-reset-email', async (req, res) => {
 
   // Check if the email exists in the database
   const query = 'SELECT * FROM users WHERE email = ?';
-  connection.query(query, [email], (err, results) => {
+  queryDatabase(query, [email], (err, results) => {
       if (err) {
           console.error('Error querying the database:', err);
           return res.status(500).json({ error: 'Database error' });
@@ -1966,7 +2062,7 @@ app.post('/resetpassword', async (req, res) => {
     const email = decoded.email;
 
     // Update the password in the database
-    connection.query(
+    queryDatabase(
       'UPDATE users SET password = ? WHERE email = ?',
       [newPassword, email],
       (err, result) => {
@@ -1998,7 +2094,7 @@ app.post('/send-invitation', authenticateToken, (req, res) => {
   // First get recipient's user ID from their email
   const getUserQuery = 'SELECT id FROM users WHERE email = ?';
   
-  connection.query(getUserQuery, [recipientEmail], (err, userResults) => {
+  queryDatabase(getUserQuery, [recipientEmail], (err, userResults) => {
     if (err) {
       return res.status(500).json({ error: 'Database error' });
     }
@@ -2015,7 +2111,7 @@ app.post('/send-invitation', authenticateToken, (req, res) => {
       VALUES (?, ?, ?, 'project_invitation', ?)
     `;
 
-    connection.query(createNotificationQuery, 
+    queryDatabase(createNotificationQuery, 
       [senderId, recipientId, projectId, message],
       (err, results) => {
         if (err) {
@@ -2047,7 +2143,7 @@ app.get('/notifications', authenticateToken, (req, res) => {
     ORDER BY n.created_at DESC
   `;
 
-  connection.query(query, [userId], (err, results) => {
+  queryDatabase(query, [userId], (err, results) => {
     if (err) {
       console.error('Error fetching notifications:', err);
       return res.status(500).json({ error: 'Failed to fetch notifications' });
@@ -2074,7 +2170,7 @@ app.put('/notifications/:id/read', authenticateToken, (req, res) => {
     WHERE id = ? AND recipient_id = ?
   `;
 
-  connection.query(query, [notificationId, userId], (err, results) => {
+  queryDatabase(query, [notificationId, userId], (err, results) => {
     if (err) {
       console.error('Error updating notification:', err);
       return res.status(500).json({ error: 'Failed to update notification' });
@@ -2103,7 +2199,7 @@ app.put('/invitations/:id/respond', authenticateToken, (req, res) => {
       `;
 
       await new Promise((resolve, reject) => {
-        connection.query(updateQuery, [response, notificationId, userId], (err, results) => {
+        queryDatabase(updateQuery, [response, notificationId, userId], (err, results) => {
           if (err) {
             return reject(err);
           }
@@ -2118,7 +2214,7 @@ app.put('/invitations/:id/respond', authenticateToken, (req, res) => {
         `;
 
         const projectId = await new Promise((resolve, reject) => {
-          connection.query(getProjectIdQuery, [notificationId, userId], (err, results) => {
+          queryDatabase(getProjectIdQuery, [notificationId, userId], (err, results) => {
             if (err) {
               return reject(err);
             }
@@ -2132,7 +2228,7 @@ app.put('/invitations/:id/respond', authenticateToken, (req, res) => {
         `;
 
         await new Promise((resolve, reject) => {
-          connection.query(insertMemberQuery, [projectId, userId], (err, results) => {
+          queryDatabase(insertMemberQuery, [projectId, userId], (err, results) => {
             if (err) {
               return reject(err);
             }
@@ -2168,7 +2264,7 @@ app.get('/project/:id/members', authenticateToken, (req, res) => {
     WHERE pm.project_id = ?
   `;
 
-  connection.query(query, [projectId], (err, results) => {
+  queryDatabase(query, [projectId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2205,7 +2301,7 @@ app.get('/user_project_display_combined', authenticateToken, (req, res) => {
       user_id = ? AND status NOT IN ('Archived')
   `;
 
-  connection.query(getAllProjectIdsQuery, [userId, userId], (err, projectIds) => {
+  queryDatabase(getAllProjectIdsQuery, [userId, userId], (err, projectIds) => {
     if (err) {
       console.error('Error getting project IDs:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2255,7 +2351,7 @@ app.get('/user_project_display_combined', authenticateToken, (req, res) => {
 
     const queryParams = [userId, ...ids];
 
-    connection.query(projectsQuery, queryParams, (err, projects) => {
+    queryDatabase(projectsQuery, queryParams, (err, projects) => {
       if (err) {
         console.error('Error getting projects:', err);
         return res.status(500).json({ error: 'Database error' });
@@ -2290,7 +2386,7 @@ app.get('/carbon-emissions', authenticateToken, (req, res) => {
   console.log('Executing query:', query);
   console.log('With parameters:', [userId]);
 
-  connection.query(query, [userId], (err, results) => {
+  queryDatabase(query, [userId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error', details: err.message });
@@ -2324,7 +2420,7 @@ app.post('/addDevice', authenticateToken, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `;
 
-  connection.query(query, [userId, device, cpu, gpu, ram, capacity, motherboard, psu], (err, results) => {
+  queryDatabase(query, [userId, device, cpu, gpu, ram, capacity, motherboard, psu], (err, results) => {
     if (err) {
       console.error('Error inserting data into the user_devices table:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2345,7 +2441,7 @@ app.put('/setCurrentDevice', authenticateToken, (req, res) => {
     WHERE id = ?
   `;
 
-  connection.query(query, [deviceId, userId], (err, results) => {
+  queryDatabase(query, [deviceId, userId], (err, results) => {
     if (err) {
       console.error('Error updating current device:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2365,7 +2461,7 @@ app.get('/user_devices', authenticateToken, (req, res) => {
     WHERE user_id = ?
   `;
 
-  connection.query(query, [userId], (err, results) => {
+  queryDatabase(query, [userId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2377,7 +2473,7 @@ app.get('/user_devices', authenticateToken, (req, res) => {
       WHERE id = ?
     `;
 
-    connection.query(currentDeviceQuery, [userId], (err, deviceResults) => {
+    queryDatabase(currentDeviceQuery, [userId], (err, deviceResults) => {
       if (err) {
         console.error('Error querying the database:', err);
         return res.status(500).json({ error: 'Database error' });
@@ -2415,7 +2511,7 @@ app.get('/all_user_projects_admin', authenticateAdmin, (req, res) => {
     ORDER BY uh.created_at DESC
   `;
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching projects:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2441,7 +2537,7 @@ app.get('/user_organization/:email', authenticateAdmin, (req, res) => {
   
   const query = 'SELECT organization FROM users WHERE email = ?';
   
-  connection.query(query, [email], (err, results) => {
+  queryDatabase(query, [email], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2491,7 +2587,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
     // Find the owner's user ID
     const findOwnerQuery = 'SELECT id FROM users WHERE email = ?';
     
-    connection.query(findOwnerQuery, [owner_email], (err, ownerResults) => {
+    queryDatabase(findOwnerQuery, [owner_email], (err, ownerResults) => {
       if (err || ownerResults.length === 0) {
         return connection.rollback(() => {
           res.status(404).json({ error: 'Owner user not found' });
@@ -2503,7 +2599,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
       // Find the leader's user ID
       const findLeaderQuery = 'SELECT id FROM users WHERE email = ?';
 
-      connection.query(findLeaderQuery, [leader_email], (err, leaderResults) => {
+      queryDatabase(findLeaderQuery, [leader_email], (err, leaderResults) => {
         if (err || (leader_email && leaderResults.length === 0)) {
           return connection.rollback(() => {
             res.status(404).json({ error: 'Leader user not found' });
@@ -2521,7 +2617,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
         `;
 
-        connection.query(createProjectQuery, 
+        queryDatabase(createProjectQuery, 
           [ownerId, organization, project_name, project_description, 
            status, stage, stage_duration, stage_start_date, finalStageDueDate,
            project_start_date, finalProjectDueDate],
@@ -2541,7 +2637,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
               WHERE id = ?
             `;
             
-            connection.query(updateProjectIdQuery, [projectId, projectId], (err) => {
+            queryDatabase(updateProjectIdQuery, [projectId, projectId], (err) => {
               if (err) {
                 return connection.rollback(() => {
                   res.status(500).json({ error: 'Failed to update project ID' });
@@ -2554,7 +2650,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
                 VALUES (?, ?, 'project_owner', ?, NULL, NOW())
               `;
 
-              connection.query(addOwnerQuery, [projectId, ownerId, stage], (err) => {
+              queryDatabase(addOwnerQuery, [projectId, ownerId, stage], (err) => {
                 if (err) {
                   return connection.rollback(() => {
                     res.status(500).json({ error: 'Failed to add project owner' });
@@ -2569,7 +2665,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
 
                 // Only add leader if one was specified
                 if (leaderId) {
-                  connection.query(addLeaderQuery, [projectId, leaderId, stage], (err) => {
+                  queryDatabase(addLeaderQuery, [projectId, leaderId, stage], (err) => {
                     if (err) {
                       return connection.rollback(() => {
                         res.status(500).json({ error: 'Failed to add project leader' });
@@ -2582,7 +2678,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
                       const placeholders = members.map(() => '?').join(',');
                       const findMembersQuery = `SELECT email, id FROM users WHERE email IN (${placeholders})`;
                       
-                      connection.query(findMembersQuery, members, (err, memberResults) => {
+                      queryDatabase(findMembersQuery, members, (err, memberResults) => {
                         if (err) {
                           return connection.rollback(() => {
                             res.status(500).json({ error: 'Failed to find project members' });
@@ -2636,7 +2732,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
                           VALUES ?
                         `;
 
-                        connection.query(addMembersQuery, [memberValues], (err) => {
+                        queryDatabase(addMembersQuery, [memberValues], (err) => {
                           if (err) {
                             return connection.rollback(() => {
                               res.status(500).json({ error: 'Failed to add project members' });
@@ -2749,7 +2845,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
 app.get('/all_users', authenticateAdmin, (req, res) => {
   const query = 'SELECT id, name, email, organization FROM users';
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2767,7 +2863,7 @@ app.post('/admin_login', (req, res) => {
     SELECT id, name, email FROM admin WHERE email = ? AND password = ?
   `;
 
-  connection.query(query, [email, password], (err, results) => {
+  queryDatabase(query, [email, password], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2793,7 +2889,7 @@ app.delete('/admin/delete_project/:id', authenticateAdmin, (req, res) => {
     if (err) return res.status(500).json({ error: 'Transaction error' });
 
     // 1. Delete related notifications
-    connection.query(
+    queryDatabase(
       `DELETE FROM notifications WHERE project_id = ?`,
       [projectId],
       (err, notifResults) => {
@@ -2804,7 +2900,7 @@ app.delete('/admin/delete_project/:id', authenticateAdmin, (req, res) => {
         }
 
         // 2. Delete related project members
-        connection.query(
+        queryDatabase(
           `DELETE FROM project_members WHERE project_id = ?`,
           [projectId],
           (err, memberResults) => {
@@ -2815,7 +2911,7 @@ app.delete('/admin/delete_project/:id', authenticateAdmin, (req, res) => {
             }
 
             // 3. Finally delete the project
-            connection.query(
+            queryDatabase(
               `DELETE FROM user_history WHERE id = ?`,
               [projectId],
               (err, projectResults) => {
@@ -2869,7 +2965,7 @@ app.get('/emission_data', authenticateAdmin, (req, res) => {
     `;
   }
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2887,15 +2983,15 @@ app.delete('/delete_user/:id', authenticateAdmin, (req, res) => {
     if (err) {
       return res.status(500).json({ error: 'Transaction initiation failed' });
     }
-    connection.query("DELETE FROM user_devices WHERE user_id = ?", [userId], (err, result) => {
+    queryDatabase("DELETE FROM user_devices WHERE user_id = ?", [userId], (err, result) => {
       if (err) {
         return connection.rollback(() => res.status(500).json({ error: 'Failed to delete user devices' }));
       }
-      connection.query("DELETE FROM user_history WHERE user_id = ?", [userId], (err, result) => {
+      queryDatabase("DELETE FROM user_history WHERE user_id = ?", [userId], (err, result) => {
         if (err) {
           return connection.rollback(() => res.status(500).json({ error: 'Failed to delete user history' }));
         }
-        connection.query("DELETE FROM users WHERE id = ?", [userId], (err, result) => {
+        queryDatabase("DELETE FROM users WHERE id = ?", [userId], (err, result) => {
           if (err) {
             return connection.rollback(() => res.status(500).json({ error: 'Failed to delete user' }));
           }
@@ -2922,7 +3018,7 @@ app.get('/project_members/:projectId', authenticateAdmin, (req, res) => {
     WHERE pm.project_id = ?
   `;
 
-  connection.query(query, [projectId], (err, results) => {
+  queryDatabase(query, [projectId], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -2938,7 +3034,7 @@ app.get('/project_members/:projectId', authenticateAdmin, (req, res) => {
 app.get('/admin/cpus', authenticateAdmin, (req, res) => {
   const query = 'SELECT * FROM cpus ORDER BY manufacturer, series, model';
   
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching CPUs:', err);
       return res.status(500).json({ error: 'Failed to fetch CPUs' });
@@ -2955,7 +3051,7 @@ app.post('/admin/cpus', authenticateAdmin, (req, res) => {
     VALUES (?, ?, ?, ?, ?)
   `;
   
-  connection.query(query, [manufacturer, series, model, generation, avg_watt_usage], (err, results) => {
+  queryDatabase(query, [manufacturer, series, model, generation, avg_watt_usage], (err, results) => {
     if (err) {
       console.error('Error adding CPU:', err);
       return res.status(500).json({ error: 'Failed to add CPU' });
@@ -2974,7 +3070,7 @@ app.put('/admin/cpus/:id', authenticateAdmin, (req, res) => {
     WHERE id = ?
   `;
   
-  connection.query(query, [manufacturer, series, model, generation, avg_watt_usage, cpuId], (err, results) => {
+  queryDatabase(query, [manufacturer, series, model, generation, avg_watt_usage, cpuId], (err, results) => {
     if (err) {
       console.error('Error updating CPU:', err);
       return res.status(500).json({ error: 'Failed to update CPU' });
@@ -2988,7 +3084,7 @@ app.delete('/admin/cpus/:id', authenticateAdmin, (req, res) => {
   
   const query = 'DELETE FROM cpus WHERE id = ?';
   
-  connection.query(query, [cpuId], (err, results) => {
+  queryDatabase(query, [cpuId], (err, results) => {
     if (err) {
       console.error('Error deleting CPU:', err);
       return res.status(500).json({ error: 'Failed to delete CPU' });
@@ -3001,7 +3097,7 @@ app.delete('/admin/cpus/:id', authenticateAdmin, (req, res) => {
 app.get('/admin/cpus-mobile', authenticateAdmin, (req, res) => {
   const query = 'SELECT * FROM cpusm ORDER BY generation, model';
   
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching mobile CPUs:', err);
       return res.status(500).json({ error: 'Failed to fetch mobile CPUs' });
@@ -3018,7 +3114,7 @@ app.post('/admin/cpus-mobile', authenticateAdmin, (req, res) => {
     VALUES (?, ?, ?)
   `;
   
-  connection.query(query, [generation, model, cpu_watts], (err, results) => {
+  queryDatabase(query, [generation, model, cpu_watts], (err, results) => {
     if (err) {
       console.error('Error adding mobile CPU:', err);
       return res.status(500).json({ error: 'Failed to add mobile CPU' });
@@ -3037,7 +3133,7 @@ app.put('/admin/cpus-mobile/:id', authenticateAdmin, (req, res) => {
     WHERE id = ?
   `;
   
-  connection.query(query, [generation, model, cpu_watts, cpuId], (err, results) => {
+  queryDatabase(query, [generation, model, cpu_watts, cpuId], (err, results) => {
     if (err) {
       console.error('Error updating mobile CPU:', err);
       return res.status(500).json({ error: 'Failed to update mobile CPU' });
@@ -3051,7 +3147,7 @@ app.delete('/admin/cpus-mobile/:id', authenticateAdmin, (req, res) => {
   
   const query = 'DELETE FROM cpusm WHERE id = ?';
   
-  connection.query(query, [cpuId], (err, results) => {
+  queryDatabase(query, [cpuId], (err, results) => {
     if (err) {
       console.error('Error deleting mobile CPU:', err);
       return res.status(500).json({ error: 'Failed to delete mobile CPU' });
@@ -3064,7 +3160,7 @@ app.delete('/admin/cpus-mobile/:id', authenticateAdmin, (req, res) => {
 app.get('/admin/gpus', authenticateAdmin, (req, res) => {
   const query = 'SELECT * FROM gpus ORDER BY manufacturer, series, model';
   
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching GPUs:', err);
       return res.status(500).json({ error: 'Failed to fetch GPUs' });
@@ -3081,7 +3177,7 @@ app.post('/admin/gpus', authenticateAdmin, (req, res) => {
     VALUES (?, ?, ?, ?, ?)
   `;
   
-  connection.query(query, [manufacturer, series, model, generation, avg_watt_usage], (err, results) => {
+  queryDatabase(query, [manufacturer, series, model, generation, avg_watt_usage], (err, results) => {
     if (err) {
       console.error('Error adding GPU:', err);
       return res.status(500).json({ error: 'Failed to add GPU' });
@@ -3100,7 +3196,7 @@ app.put('/admin/gpus/:id', authenticateAdmin, (req, res) => {
     WHERE id = ?
   `;
   
-  connection.query(query, [manufacturer, series, model, generation, avg_watt_usage, gpuId], (err, results) => {
+  queryDatabase(query, [manufacturer, series, model, generation, avg_watt_usage, gpuId], (err, results) => {
     if (err) {
       console.error('Error updating GPU:', err);
       return res.status(500).json({ error: 'Failed to update GPU' });
@@ -3114,7 +3210,7 @@ app.delete('/admin/gpus/:id', authenticateAdmin, (req, res) => {
   
   const query = 'DELETE FROM gpus WHERE id = ?';
   
-  connection.query(query, [gpuId], (err, results) => {
+  queryDatabase(query, [gpuId], (err, results) => {
     if (err) {
       console.error('Error deleting GPU:', err);
       return res.status(500).json({ error: 'Failed to delete GPU' });
@@ -3127,7 +3223,7 @@ app.delete('/admin/gpus/:id', authenticateAdmin, (req, res) => {
 app.get('/admin/gpus-mobile', authenticateAdmin, (req, res) => {
   const query = 'SELECT * FROM gpusm ORDER BY manufacturer, model';
   
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching mobile GPUs:', err);
       return res.status(500).json({ error: 'Failed to fetch mobile GPUs' });
@@ -3144,7 +3240,7 @@ app.post('/admin/gpus-mobile', authenticateAdmin, (req, res) => {
     VALUES (?, ?, ?)
   `;
   
-  connection.query(query, [manufacturer, model, gpu_watts], (err, results) => {
+  queryDatabase(query, [manufacturer, model, gpu_watts], (err, results) => {
     if (err) {
       console.error('Error adding mobile GPU:', err);
       return res.status(500).json({ error: 'Failed to add mobile GPU' });
@@ -3163,7 +3259,7 @@ app.put('/admin/gpus-mobile/:id', authenticateAdmin, (req, res) => {
     WHERE id = ?
   `;
   
-  connection.query(query, [manufacturer, model, gpu_watts, gpuId], (err, results) => {
+  queryDatabase(query, [manufacturer, model, gpu_watts, gpuId], (err, results) => {
     if (err) {
       console.error('Error updating mobile GPU:', err);
       return res.status(500).json({ error: 'Failed to update mobile GPU' });
@@ -3177,7 +3273,7 @@ app.delete('/admin/gpus-mobile/:id', authenticateAdmin, (req, res) => {
   
   const query = 'DELETE FROM gpusm WHERE id = ?';
   
-  connection.query(query, [gpuId], (err, results) => {
+  queryDatabase(query, [gpuId], (err, results) => {
     if (err) {
       console.error('Error deleting mobile GPU:', err);
       return res.status(500).json({ error: 'Failed to delete mobile GPU' });
@@ -3190,7 +3286,7 @@ app.delete('/admin/gpus-mobile/:id', authenticateAdmin, (req, res) => {
 app.get('/admin/rams', authenticateAdmin, (req, res) => {
   const query = 'SELECT * FROM ram ORDER BY ddr_generation';
   
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching RAMs:', err);
       return res.status(500).json({ error: 'Failed to fetch RAMs' });
@@ -3207,7 +3303,7 @@ app.post('/admin/rams', authenticateAdmin, (req, res) => {
     VALUES (?, ?, ?)
   `;
   
-  connection.query(query, [ddr_generation, voltage, avg_watt_usage], (err, results) => {
+  queryDatabase(query, [ddr_generation, voltage, avg_watt_usage], (err, results) => {
     if (err) {
       console.error('Error adding RAM:', err);
       return res.status(500).json({ error: 'Failed to add RAM' });
@@ -3226,7 +3322,7 @@ app.put('/admin/rams/:id', authenticateAdmin, (req, res) => {
     WHERE id = ?
   `;
   
-  connection.query(query, [ddr_generation, voltage, avg_watt_usage, ramId], (err, results) => {
+  queryDatabase(query, [ddr_generation, voltage, avg_watt_usage, ramId], (err, results) => {
     if (err) {
       console.error('Error updating RAM:', err);
       return res.status(500).json({ error: 'Failed to update RAM' });
@@ -3240,7 +3336,7 @@ app.delete('/admin/rams/:id', authenticateAdmin, (req, res) => {
   
   const query = 'DELETE FROM ram WHERE id = ?';
   
-  connection.query(query, [ramId], (err, results) => {
+  queryDatabase(query, [ramId], (err, results) => {
     if (err) {
       console.error('Error deleting RAM:', err);
       return res.status(500).json({ error: 'Failed to delete RAM' });
@@ -3260,7 +3356,7 @@ app.get('/admin/device-maintenance', authenticateAdmin, (req, res) => {
     ORDER BY u.organization, u.name
   `;
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching device maintenance data:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3283,7 +3379,7 @@ app.get('/admin/device-maintenance/:id', authenticateAdmin, (req, res) => {
     WHERE ud.id = ?
   `;
 
-  connection.query(query, [deviceId], (err, results) => {
+  queryDatabase(query, [deviceId], (err, results) => {
     if (err) {
       console.error('Error fetching device details:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3308,7 +3404,7 @@ app.put('/admin/device-maintenance/:id', authenticateAdmin, (req, res) => {
     WHERE id = ?
   `;
 
-  connection.query(query, [device, cpu, gpu, ram, capacity, motherboard, psu, deviceId], (err, results) => {
+  queryDatabase(query, [device, cpu, gpu, ram, capacity, motherboard, psu, deviceId], (err, results) => {
     if (err) {
       console.error('Error updating device details:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3327,7 +3423,7 @@ app.delete('/admin/device-maintenance/:id', authenticateAdmin, (req, res) => {
     WHERE id = ?
   `;
 
-  connection.query(query, [deviceId], (err, results) => {
+  queryDatabase(query, [deviceId], (err, results) => {
     if (err) {
       console.error('Error deleting device:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3353,7 +3449,7 @@ app.post('/initialize_timeline_dates', authenticateAdmin, (req, res) => {
     WHERE stage_start_date IS NULL OR project_start_date IS NULL
   `;
 
-  connection.query(updateQuery, (err, results) => {
+  queryDatabase(updateQuery, (err, results) => {
     if (err) {
       console.error('Error updating timeline dates:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3379,7 +3475,7 @@ app.post('/add_project_member', authenticateAdmin, async (req, res) => {
     // First find the user ID from email
     const findUserQuery = 'SELECT id FROM users WHERE email = ?';
     
-    connection.query(findUserQuery, [userEmail], (err, userResults) => {
+    queryDatabase(findUserQuery, [userEmail], (err, userResults) => {
       if (err) {
         console.error('Error finding user:', err);
         return res.status(500).json({ error: 'Database error while finding user' });
@@ -3394,7 +3490,7 @@ app.post('/add_project_member', authenticateAdmin, async (req, res) => {
       // Check if user is already a member of the project
       const checkMemberQuery = 'SELECT * FROM project_members WHERE project_id = ? AND user_id = ?';
       
-      connection.query(checkMemberQuery, [projectId, userId], (err, memberResults) => {
+      queryDatabase(checkMemberQuery, [projectId, userId], (err, memberResults) => {
         if (err) {
           console.error('Error checking existing member:', err);
           return res.status(500).json({ error: 'Database error while checking existing member' });
@@ -3410,7 +3506,7 @@ app.post('/add_project_member', authenticateAdmin, async (req, res) => {
           VALUES (?, ?, ?, NOW())
         `;
 
-        connection.query(addMemberQuery, [projectId, userId, role], (err, results) => {
+        queryDatabase(addMemberQuery, [projectId, userId, role], (err, results) => {
           if (err) {
             console.error('Error adding project member:', err);
             return res.status(500).json({ error: 'Database error while adding member' });
@@ -3424,7 +3520,7 @@ app.post('/add_project_member', authenticateAdmin, async (req, res) => {
             WHERE pm.project_id = ?
           `;
 
-          connection.query(getMembersQuery, [projectId], (err, membersList) => {
+          queryDatabase(getMembersQuery, [projectId], (err, membersList) => {
             if (err) {
               console.error('Error fetching updated members list:', err);
               return res.status(500).json({ error: 'Database error while fetching members' });
@@ -3453,7 +3549,7 @@ app.delete('/remove_project_member', authenticateAdmin, (req, res) => {
     WHERE project_id = ? AND user_id = ?
   `;
 
-  connection.query(query, [projectId, userId], (err, results) => {
+  queryDatabase(query, [projectId, userId], (err, results) => {
     if (err) {
       console.error('Error removing project member:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3474,7 +3570,7 @@ app.get('/project_members/:projectId', authenticateToken, (req, res) => {
     WHERE pm.project_id = ?
   `;
 
-  connection.query(query, [projectId], (err, results) => {
+  queryDatabase(query, [projectId], (err, results) => {
     if (err) {
       console.error('Error fetching project members:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3501,7 +3597,7 @@ app.get('/validate_user_email/:email', authenticateToken, (req, res) => {
   // Check if email exists in the database
   const query = 'SELECT * FROM users WHERE email = ?';
   
-  connection.query(query, [email], (err, results) => {
+  queryDatabase(query, [email], (err, results) => {
     if (err) {
       console.error('Error validating user email:', err);
       return res.status(500).json({ error: 'Internal server error' });
@@ -3541,7 +3637,7 @@ app.put('/admin/update_project/:id', authenticateAdmin, (req, res) => {
     WHERE id = ?
   `;
 
-  connection.query(query, [
+  queryDatabase(query, [
     projectName,
     projectDescription,
     status,
@@ -3575,7 +3671,7 @@ app.post('/create_temp_user', authenticateAdmin, (req, res) => {
   // Check if user already exists
   const checkUserQuery = 'SELECT id FROM users WHERE email = ?';
   
-  connection.query(checkUserQuery, [email], (err, results) => {
+  queryDatabase(checkUserQuery, [email], (err, results) => {
     if (err) {
       console.error('Error checking existing user:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3598,7 +3694,7 @@ app.post('/create_temp_user', authenticateAdmin, (req, res) => {
 
     const userName = email.split('@')[0]; // Use part before @ as temporary name
 
-    connection.query(createUserQuery, [userName, email, organization], (err, result) => {
+    queryDatabase(createUserQuery, [userName, email, organization], (err, result) => {
       if (err) {
         console.error('Error creating temporary user:', err);
         return res.status(500).json({ error: 'Failed to create temporary user' });
@@ -3643,7 +3739,7 @@ app.post('/project-requests', authenticateToken, (req, res) => {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
   `;
 
-  connection.query(
+  queryDatabase(
     query,
     [
       userId, title, description, project_stage, organization,
@@ -3673,7 +3769,7 @@ app.get('/admin/project-requests', authenticateAdmin, (req, res) => {
     ORDER BY pr.created_at DESC
   `;
 
-  connection.query(query, (err, results) => {
+  queryDatabase(query, (err, results) => {
     if (err) {
       console.error('Error fetching project requests:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3694,7 +3790,7 @@ app.get('/user/project-requests', authenticateToken, (req, res) => {
     ORDER BY created_at DESC
   `;
 
-  connection.query(query, [userId], (err, results) => {
+  queryDatabase(query, [userId], (err, results) => {
     if (err) {
       console.error('Error fetching user project requests:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -3724,7 +3820,7 @@ app.put('/admin/project-requests/:id/approve', authenticateAdmin, (req, res) => 
       WHERE id = ?
     `;
 
-    connection.query(updateQuery, [reviewerId, review_notes, requestId], (err, results) => {
+    queryDatabase(updateQuery, [reviewerId, review_notes, requestId], (err, results) => {
       if (err) {
         return connection.rollback(() => {
           console.error('Error updating request:', err);
@@ -3743,7 +3839,7 @@ app.put('/admin/project-requests/:id/approve', authenticateAdmin, (req, res) => 
         SELECT * FROM project_requests WHERE id = ?
       `;
 
-      connection.query(getRequestQuery, [requestId], (err, requests) => {
+      queryDatabase(getRequestQuery, [requestId], (err, requests) => {
         if (err) {
           return connection.rollback(() => {
             console.error('Error fetching request:', err);
@@ -3781,7 +3877,7 @@ app.put('/admin/project-requests/:id/approve', authenticateAdmin, (req, res) => 
           request.project_due_date
         ];
 
-        connection.query(createProjectQuery, projectValues, (err, projectResult) => {
+        queryDatabase(createProjectQuery, projectValues, (err, projectResult) => {
           if (err) {
             return connection.rollback(() => {
               console.error('Error creating project:', err);
@@ -3797,7 +3893,7 @@ app.put('/admin/project-requests/:id/approve', authenticateAdmin, (req, res) => 
             SET project_id = ? 
             WHERE id = ?
           `;
-            connection.query(updateProjectIdQuery, [projectId, projectId], (err) => {
+            queryDatabase(updateProjectIdQuery, [projectId, projectId], (err) => {
             if (err) {
               return connection.rollback(() => {
                 console.error('Error updating project ID:', err);
@@ -3811,7 +3907,7 @@ app.put('/admin/project-requests/:id/approve', authenticateAdmin, (req, res) => 
               VALUES (?, ?, 'project_owner', ?, 'In Progress')
             `;
             
-            connection.query(addOwnerQuery, [projectId, request.user_id, request.project_stage], (err) => {
+            queryDatabase(addOwnerQuery, [projectId, request.user_id, request.project_stage], (err) => {
               if (err) {
                 return connection.rollback(() => {
                   console.error('Error adding project owner:', err);
@@ -3825,7 +3921,7 @@ app.put('/admin/project-requests/:id/approve', authenticateAdmin, (req, res) => 
                 VALUES (?, ?, 'project_leader', ?, 'In Progress')
               `;
               
-              connection.query(addLeaderQuery, [projectId, request.user_id, request.project_stage], (err) => {
+              queryDatabase(addLeaderQuery, [projectId, request.user_id, request.project_stage], (err) => {
                 if (err) {
                   return connection.rollback(() => {
                     console.error('Error adding project leader:', err);
@@ -3868,7 +3964,7 @@ app.put('/admin/project-requests/:id/reject', authenticateAdmin, (req, res) => {
     WHERE id = ?
   `;
 
-  connection.query(query, [reviewerId, review_notes, requestId], (err, results) => {
+  queryDatabase(query, [reviewerId, review_notes, requestId], (err, results) => {
     if (err) {
       console.error('Error rejecting project request:', err);
       return res.status(500).json({ error: 'Database error' });
