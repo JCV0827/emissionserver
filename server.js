@@ -115,13 +115,19 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // Update the uploads directory to use the folder path relative to this server.js file
+// For Vercel, use /tmp directory as it's the only writable directory in serverless
 const uploadsDir = process.env.NODE_ENV === 'production' 
-  ? '/data/uploads' 
+  ? '/tmp/uploads' 
   : path.join(__dirname, 'uploads');
 
-// Ensure the uploads directory exists
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
+// Ensure the uploads directory exists with error handling
+try {
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+} catch (error) {
+  console.error('Failed to create uploads directory:', error);
+  // In production, we'll continue without the directory and handle uploads differently
 }
 
 // Serve static files from uploads directory with proper headers and error handling
