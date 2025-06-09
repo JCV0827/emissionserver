@@ -105,27 +105,11 @@ const transporter = nodemailer.createTransport({
 
 // Set up global CORS headers
 app.use(cors({
-  origin: "https://emission-vert.vercel.app",
+  origin: 'https://emission-vert.vercel.app',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-requested-with'],
-  preflightContinue: false,
-  optionsSuccessStatus: 200
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
-// Additional CORS headers for preflight requests
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin);
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-requested-with');
-  
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
-    next();
-  }
-});
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -142,6 +126,7 @@ if (!fs.existsSync(uploadsDir)) {
 
 // Serve static files from uploads directory with proper headers and error handling
 app.use('/uploads', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', 'https://emission-vert.vercel.app');
   res.header('Cross-Origin-Resource-Policy', 'cross-origin');
   res.header('Cache-Control', 'max-age=3600'); // Cache images for 1 hour
   next();
@@ -476,7 +461,8 @@ app.post('/user_history', authenticateToken, (req, res) => {
       message: 'Session recorded successfully',
       projectId: results.insertId,
       timeline: {
-        stage_duration,        stage_start_date,
+        stage_duration,
+        stage_start_date,
         stage_due_date,
         project_start_date,
         project_due_date
@@ -484,6 +470,8 @@ app.post('/user_history', authenticateToken, (req, res) => {
     });
   });
 });
+
+
 
 // Endpoint to fetch user's projects
 app.get('/user_projects', authenticateToken, (req, res) => {
@@ -1664,7 +1652,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                     const memberValues = membersToTransfer.map(member => [
                       newProjectId,
                       member.user_id,
-                      'member',
+                      member.role,
                       nextProjectStage,
                       // Set the user who completed this stage to 'In Progress', others to 'Not Started'
                       // And ensure project_owner always has NULL progress_status
@@ -2641,7 +2629,7 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
                           INSERT INTO project_members (project_id, user_id, role, current_stage, progress_status)
                           VALUES ?
                         `;
-                        
+
                         connection.query(addMembersQuery, [memberValues], (err) => {
                           if (err) {
                             return connection.rollback(() => {
@@ -2744,11 +2732,12 @@ app.post('/admin/create_project', authenticateAdmin, (req, res) => {
                 }
               });
             });
-          });
-        });
+          }
+        );
       });
     });
   });
+});
 
 // Endpoint to get all users Admin only
 app.get('/all_users', authenticateAdmin, (req, res) => {
@@ -3342,6 +3331,13 @@ app.delete('/admin/device-maintenance/:id', authenticateAdmin, (req, res) => {
   });
 });
 
+// Serve static files from uploads directory with proper headers
+app.use('/uploads', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  next();
+}, express.static(path.join(__dirname, 'uploads')));
+
 // Endpoint to initialize timeline dates for existing records
 app.post('/initialize_timeline_dates', authenticateAdmin, (req, res) => {
   const updateQuery = `
@@ -3879,13 +3875,3 @@ app.put('/admin/project-requests/:id/reject', authenticateAdmin, (req, res) => {
     res.status(200).json({ message: 'Project request rejected successfully' });
   });
 });
-
-// Only start the server if not in a serverless environment (Vercel)
-if (process.env.NODE_ENV !== 'production') {
-  app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-  });
-}
-
-// Export the app for Vercel
-module.exports = app;
