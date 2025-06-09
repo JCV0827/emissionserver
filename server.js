@@ -480,7 +480,7 @@ app.get('/user', authenticateToken, (req, res) => {
 
     if (userResults.length > 0) {
       const user = userResults[0];
-      const profileImageUrl = user.profile_image ? `https://emission-mah2.onrender.com/uploads/${user.profile_image}` : null;
+      const profileImageUrl = user.profile_image ? `https://emissionserver.vercel.app/uploads/${user.profile_image}` : null;
       user.profile_image = profileImageUrl;
 
       const deviceQuery = `
@@ -946,9 +946,9 @@ app.post('/calculate_emissions', authenticateToken, async (req, res) => {
         const { cpu, gpu, ram, psu } = userResults[0];
 
         // Fetch CPU, GPU, and RAM wattage
-        const cpuResponse = await fetch(`https://emission-mah2.onrender.com/cpu_usage?model=${cpu}`);
-        const gpuResponse = await fetch(`https://emission-mah2.onrender.com/gpu_usage?model=${gpu}`);
-        const ramResponse = await fetch(`https://emission-mah2.onrender.com/ram_usage?model=${ram}`);
+        const cpuResponse = await fetch(`https://emissionserver.vercel.app/cpu_usage?model=${cpu}`);
+        const gpuResponse = await fetch(`https://emissionserver.vercel.app/gpu_usage?model=${gpu}`);
+        const ramResponse = await fetch(`https://emissionserver.vercel.app/ram_usage?model=${ram}`);
 
         if (cpuResponse.ok && gpuResponse.ok && ramResponse.ok) {
           const { avg_watt_usage: cpuWattUsage } = await cpuResponse.json();
@@ -1068,9 +1068,9 @@ app.post('/calculate_emissionsM', authenticateToken, async (req, res) => {
         const { cpu, gpu, ram, psu } = userResults[0];
 
         // Fetch CPU, GPU, and RAM wattage from mobile tables
-        const cpuResponse = await fetch(`https://emission-mah2.onrender.com/cpum_usage?model=${cpu}`);
-        const gpuResponse = await fetch(`https://emission-mah2.onrender.com/gpum_usage?model=${gpu}`);
-        const ramResponse = await fetch(`https://emission-mah2.onrender.com/ram_usage?model=${ram}`);
+        const cpuResponse = await fetch(`https://emissionserver.vercel.app/cpum_usage?model=${cpu}`);
+        const gpuResponse = await fetch(`https://emissionserver.vercel.app/gpum_usage?model=${gpu}`);
+        const ramResponse = await fetch(`https://emissionserver.vercel.app/ram_usage?model=${ram}`);
 
         if (cpuResponse.ok && gpuResponse.ok && ramResponse.ok) {
           const cpuData = await cpuResponse.json();
@@ -1269,7 +1269,7 @@ app.get('/displayuser', authenticateToken, (req, res) => {
 
     if (userResults.length > 0) {
       const user = userResults[0];
-      const profileImageUrl = user.profile_image ? `https://emission-mah2.onrender.com/uploads/${user.profile_image}` : null;
+      const profileImageUrl = user.profile_image ? `https://emissionserver.vercel.app/uploads/${user.profile_image}` : null;
       user.profile_image = profileImageUrl;
 
       const deviceQuery = `
@@ -1351,7 +1351,7 @@ app.get('/displayuserM', authenticateToken, (req, res) => {
 
     if (userResults.length > 0) {
       const user = userResults[0];
-      const profileImageUrl = user.profile_image ? `https://emission-mah2.onrender.com/uploads/${user.profile_image}` : null;
+      const profileImageUrl = user.profile_image ? `https://emissionserver.vercel.app/uploads/${user.profile_image}` : null;
       user.profile_image = profileImageUrl;
 
       const deviceQuery = `
@@ -2005,7 +2005,7 @@ app.post('/send-reset-email', async (req, res) => {
       const resetToken = jwt.sign({ email }, JWT_SECRET, { expiresIn: '5m' });
 
       // Send the password reset email
-      const resetLink = `https://emission-mah2.onrender.com/reset-password?token=${resetToken}`;
+      const resetLink = `https://emissionserver.vercel.app/reset-password?token=${resetToken}`;
       const mailOptions = {
           from: `"EmissionSense" <${process.env.EMAIL_USER}>`,
           to: email,
@@ -2273,7 +2273,7 @@ app.get('/project/:id/members', authenticateToken, (req, res) => {
     const members = results.map(member => ({
       ...member,
       profile_image: member.profile_image 
-        ? `https://emission-mah2.onrender.com/uploads/${member.profile_image}`
+        ? `https://emissionserver.vercel.app/uploads/${member.profile_image}`
         : null
     }));
 
@@ -3579,7 +3579,7 @@ app.get('/project_members/:projectId', authenticateToken, (req, res) => {
     const members = results.map(member => ({
       ...member,
       profile_image: member.profile_image 
-        ? `https://emission-mah2.onrender.com/uploads/${member.profile_image}`
+        ? `https://emissionserver.vercel.app/uploads/${member.profile_image}`
         : null,
       roleTitle: member.role === 'project_owner' ? 'Project Owner (Client)'
                : member.role === 'project_leader' ? 'Project Leader (Team Manager)'
