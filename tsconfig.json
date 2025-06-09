@@ -12,9 +12,9 @@
     "moduleResolution": "node",
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true
-  },
-  "include": [
-    "api/**/*"
+  },  "include": [
+    "**/*.ts",
+    "**/*.tsx"
   ],
   "exclude": [
     "node_modules",
