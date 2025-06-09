@@ -2,8 +2,7 @@
   "name": "emissionserver",
   "version": "1.0.0",
   "description": "Emission tracking server for Vercel deployment",
-  "main": "api/index.ts",
-  "scripts": {
+  "main": "api/index.ts",  "scripts": {
     "dev": "vercel dev",
     "build": "tsc",
     "start": "node api/server.js"
