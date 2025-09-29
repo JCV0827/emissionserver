@@ -172,15 +172,24 @@ const checkAndUpdateProjectCompletion = (projectId, callback) => {
     }  });
 };
 
-// Function to get carbon factor based on region
-const getCarbonFactor = (region) => {
-  const carbonFactors = {
-    'Singapore': 0.412,
-    'Philippines': 0.5246
-  };
-  
-  return carbonFactors[region] || 0.412; // Default to Singapore's factor if region not found
-};
+// Emission factors utilities (global regions support)
+const { getFactor: getStaticFactor, getRegions } = require('./emissionFactors');
+const { getLiveFactor } = require('./dynamicCarbonProvider');
+
+// Unified resolver: try live first (if configured), fallback to static
+async function resolveCarbonFactor({ region, zone, lat, lon } = {}) {
+  // 1) Manual override via env (optional)
+  const envOverride = process.env.FORCE_CARBON_FACTOR_KG_PER_KWH;
+  if (envOverride) {
+    const val = Number(envOverride);
+    if (!Number.isNaN(val) && val > 0) return val;
+  }
+  // 2) Live provider (free if you bring your own API key with free tier)
+  const live = await getLiveFactor({ region, zone, lat, lon });
+  if (typeof live === 'number' && live > 0) return live;
+  // 3) Static dataset
+  return getStaticFactor(region);
+}
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -230,6 +239,33 @@ app.use('/uploads', (req, res, next) => {
     res.status(404).json({ error: 'Image not found' });
   } else {
     res.status(500).json({ error: 'Error serving image' });
+  }
+});
+
+// Regions and carbon factor endpoints
+app.get('/regions', (req, res) => {
+  try {
+    const regions = getRegions();
+    res.status(200).json({ regions });
+  } catch (e) {
+    console.error('Error getting regions', e);
+    res.status(500).json({ error: 'Failed to fetch regions' });
+  }
+});
+
+app.get('/carbon-factor', async (req, res) => {
+  try {
+    const { region, zone, lat, lon } = req.query;
+    const factor = await resolveCarbonFactor({
+      region,
+      zone,
+      lat: lat ? Number(lat) : undefined,
+      lon: lon ? Number(lon) : undefined,
+    });
+    res.status(200).json({ region, zone, factor });
+  } catch (e) {
+    console.error('Error getting carbon factor', e);
+    res.status(500).json({ error: 'Failed to fetch carbon factor' });
   }
 });
 
@@ -965,7 +1001,7 @@ app.post('/calculate_emissions', authenticateToken, async (req, res) => {
           const totalEnergyUsed = (totalWattUsage / 3600) * sessionDurationSeconds;
 
           // Get carbon factor based on user's region
-          const carbonFactor = getCarbonFactor(userRegion);
+          const carbonFactor = await resolveCarbonFactor({ region: userRegion });
           const carbonEmissions = totalEnergyUsed * carbonFactor;
 
           // Update the project with the calculated emissions
@@ -1085,7 +1121,7 @@ app.post('/calculate_emissionsM', authenticateToken, async (req, res) => {
           const totalWattage = cpuWattage + gpuWattage + ramWattage;
 
           // Get carbon factor based on user's region
-          const carbonFactor = getCarbonFactor(userRegion);
+          const carbonFactor = await resolveCarbonFactor({ region: userRegion });
           // Calculate carbon emissions
           const carbonEmissions = ((totalWattage * sessionDuration) / 3600) * carbonFactor;
 
@@ -2501,7 +2537,7 @@ app.get('/compare_devices', authenticateToken, async (req, res) => {
     // Get user's region to apply appropriate carbon factor
     const userRows = await dbQuery('SELECT region FROM users WHERE id = ?', [userId]);
     const userRegion = userRows?.[0]?.region || 'Singapore';
-    const carbonFactor = getCarbonFactor(userRegion); // kg CO2 per kWh
+  const carbonFactor = await resolveCarbonFactor({ region: userRegion }); // kg CO2 per kWh
 
     // Get all devices for this user
     const devices = await dbQuery(
