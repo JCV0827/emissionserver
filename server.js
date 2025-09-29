@@ -2485,6 +2485,102 @@ app.get('/user_devices', authenticateToken, (req, res) => {
   });
 });
 
+// Combined endpoint to fetch device details and calculate carbon emissions for comparison
+app.get('/compare_devices', authenticateToken, async (req, res) => {
+  const userId = req.user.id;
+
+  // Promisified DB helper using existing queryDatabase wrapper
+  const dbQuery = (sql, params = []) => new Promise((resolve, reject) => {
+    queryDatabase(sql, params, (err, results) => {
+      if (err) return reject(err);
+      resolve(results);
+    });
+  });
+
+  try {
+    // Get user's region to apply appropriate carbon factor
+    const userRows = await dbQuery('SELECT region FROM users WHERE id = ?', [userId]);
+    const userRegion = userRows?.[0]?.region || 'Singapore';
+    const carbonFactor = getCarbonFactor(userRegion); // kg CO2 per kWh
+
+    // Get all devices for this user
+    const devices = await dbQuery(
+      'SELECT id, device, cpu, gpu, ram, psu FROM user_devices WHERE user_id = ?',
+      [userId]
+    );
+
+    // If no devices, return empty list
+    if (!devices || devices.length === 0) {
+      return res.status(200).json({ emissions: [] });
+    }
+
+    const emissions = await Promise.all(
+      devices.map(async (row) => {
+        const { id, device, cpu, gpu, ram } = row;
+
+        let cpuWattage = 0;
+        let gpuWattage = 0;
+        let ramWattage = 0;
+
+        try {
+          if (device === 'Laptop' || device === 'Mobile') {
+            // Mobile/Laptop wattage sources
+            const cpuRows = await dbQuery('SELECT cpu_watts FROM cpusm WHERE model = ?', [cpu]);
+            const gpuRows = await dbQuery('SELECT gpu_watts FROM gpusm WHERE model = ?', [gpu]);
+            const ramRows = await dbQuery('SELECT avg_watt_usage FROM ram WHERE ddr_generation = ?', [ram]);
+
+            cpuWattage = Number(cpuRows?.[0]?.cpu_watts) || 0;
+            gpuWattage = Number(gpuRows?.[0]?.gpu_watts) || 0;
+            ramWattage = Number(ramRows?.[0]?.avg_watt_usage) || 0;
+          } else {
+            // Desktop/PC wattage sources
+            const cpuRows = await dbQuery('SELECT avg_watt_usage FROM cpus WHERE model = ?', [cpu]);
+            const gpuRows = await dbQuery('SELECT avg_watt_usage FROM gpus WHERE model = ?', [gpu]);
+            const ramRows = await dbQuery('SELECT avg_watt_usage FROM ram WHERE ddr_generation = ?', [ram]);
+
+            cpuWattage = Number(cpuRows?.[0]?.avg_watt_usage) || 0;
+            gpuWattage = Number(gpuRows?.[0]?.avg_watt_usage) || 0;
+            ramWattage = Number(ramRows?.[0]?.avg_watt_usage) || 0;
+          }
+        } catch (e) {
+          // Fall back to zeros if any lookup fails for this device
+          cpuWattage = cpuWattage || 0;
+          gpuWattage = gpuWattage || 0;
+          ramWattage = ramWattage || 0;
+        }
+
+        // Total average wattage (do not include PSU here to match update behavior)
+        const totalWattage = cpuWattage + gpuWattage + ramWattage; // watts
+
+        // Estimate annual usage: 8 hours/day, 365 days/year
+        const hoursPerDay = 8;
+        const daysPerYear = 365;
+        const kwhPerYear = (totalWattage / 1000) * hoursPerDay * daysPerYear;
+
+        // Carbon emissions in kg CO2 per year, using region-based factor
+        const carbonEmissions = kwhPerYear * carbonFactor;
+
+        return {
+          deviceId: id,
+          deviceType: device,
+          carbonEmissions,
+          specifications: [
+            `CPU: ${cpu}`,
+            `GPU: ${gpu}`,
+            `RAM: ${ram}`,
+            `PSU: ${row.psu}`
+          ]
+        };
+      })
+    );
+
+    return res.status(200).json({ emissions });
+  } catch (error) {
+    console.error('Error processing device comparison:', error);
+    return res.status(500).json({ error: 'Error processing device data' });
+  }
+});
+
 // ALL admin endpoints
 
 // View all the users projects
