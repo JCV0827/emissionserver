@@ -176,19 +176,24 @@ const checkAndUpdateProjectCompletion = (projectId, callback) => {
 const { getFactor: getStaticFactor, getRegions } = require('./emissionFactors');
 const { getLiveFactor } = require('./dynamicCarbonProvider');
 
-// Unified resolver: try live first (if configured), fallback to static
-async function resolveCarbonFactor({ region, zone, lat, lon } = {}) {
+// Unified resolvers: with and without source metadata
+async function resolveCarbonFactorWithSource({ region, zone, lat, lon } = {}) {
   // 1) Manual override via env (optional)
   const envOverride = process.env.FORCE_CARBON_FACTOR_KG_PER_KWH;
   if (envOverride) {
     const val = Number(envOverride);
-    if (!Number.isNaN(val) && val > 0) return val;
+    if (!Number.isNaN(val) && val > 0) return { factor: val, source: 'override' };
   }
   // 2) Live provider (free if you bring your own API key with free tier)
   const live = await getLiveFactor({ region, zone, lat, lon });
-  if (typeof live === 'number' && live > 0) return live;
+  if (typeof live === 'number' && live > 0) return { factor: live, source: 'live' };
   // 3) Static dataset
-  return getStaticFactor(region);
+  return { factor: getStaticFactor(region), source: 'static' };
+}
+
+async function resolveCarbonFactor({ region, zone, lat, lon } = {}) {
+  const { factor } = await resolveCarbonFactorWithSource({ region, zone, lat, lon });
+  return factor;
 }
 
 const transporter = nodemailer.createTransport({
@@ -256,13 +261,14 @@ app.get('/regions', (req, res) => {
 app.get('/carbon-factor', async (req, res) => {
   try {
     const { region, zone, lat, lon } = req.query;
-    const factor = await resolveCarbonFactor({
+    const resolved = await resolveCarbonFactorWithSource({
       region,
       zone,
       lat: lat ? Number(lat) : undefined,
       lon: lon ? Number(lon) : undefined,
     });
-    res.status(200).json({ region, zone, factor });
+    res.setHeader('X-Carbon-Factor-Source', resolved.source);
+    res.status(200).json({ region, zone, factor: resolved.factor, source: resolved.source });
   } catch (e) {
     console.error('Error getting carbon factor', e);
     res.status(500).json({ error: 'Failed to fetch carbon factor' });
