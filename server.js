@@ -1309,7 +1309,7 @@ app.get('/displayuser', authenticateToken, (req, res) => {
       return res.status(500).json({ error: 'Database error' });
     }
 
-    if (userResults.length > 0) {
+ if (userResults.length > 0) {
       const user = userResults[0];
       const profileImageUrl = user.profile_image ? `https://emissionserver.vercel.app/uploads/${user.profile_image}` : null;
       user.profile_image = profileImageUrl;
@@ -1335,12 +1335,21 @@ app.get('/displayuser', authenticateToken, (req, res) => {
             motherboard: device.motherboard,
             PSU: device.psu,
             CPU_avg_watt_usage: null,
-            GPU_avg_watt_usage: null
+            GPU_avg_watt_usage: null,
+            RAM_avg_watt_usage: null,
+            PSU_watts: null
           };
 
-          // Fetch wattage for CPU and GPU
+          // Parse PSU watts if it's a number
+          const psuWatts = parseFloat(device.psu);
+          if (!isNaN(psuWatts)) {
+            specifications.PSU_watts = psuWatts;
+          }
+
+          // Fetch wattage for CPU, GPU, and RAM
           const cpuQuery = 'SELECT avg_watt_usage FROM cpus WHERE model = ?';
           const gpuQuery = 'SELECT avg_watt_usage FROM gpus WHERE model = ?';
+          const ramQuery = 'SELECT avg_watt_usage FROM ram WHERE ddr_generation = ?';
 
           queryDatabase(cpuQuery, [device.cpu], (err, cpuResults) => {
             if (err) {
@@ -1362,7 +1371,18 @@ app.get('/displayuser', authenticateToken, (req, res) => {
                 specifications.GPU_avg_watt_usage = gpuResults[0].avg_watt_usage;
               }
 
-              res.status(200).json({ user: { ...user, specifications }, currentDevice: device });
+              queryDatabase(ramQuery, [device.ram], (err, ramResults) => {
+                if (err) {
+                  console.error('Error querying RAM database:', err);
+                  return res.status(500).json({ error: 'RAM database error' });
+                }
+
+                if (ramResults.length > 0) {
+                  specifications.RAM_avg_watt_usage = ramResults[0].avg_watt_usage;
+                }
+
+                res.status(200).json({ user: { ...user, specifications }, currentDevice: device });
+              });
             });
           });
         } else {
@@ -1417,12 +1437,21 @@ app.get('/displayuserM', authenticateToken, (req, res) => {
             motherboard: device.motherboard,
             PSU: device.psu,
             cpu_watts: null,
-            gpu_watts: null
+            gpu_watts: null,
+            ram_watts: null,
+            psu_watts: null
           };
 
-          // Fetch wattage for CPU and GPU
+          // Parse PSU watts if it's a number
+          const psuWatts = parseFloat(device.psu);
+          if (!isNaN(psuWatts)) {
+            specifications.psu_watts = psuWatts;
+          }
+
+          // Fetch wattage for CPU, GPU, and RAM
           const cpuQuery = 'SELECT cpu_watts FROM cpusm WHERE model = ?';
           const gpuQuery = 'SELECT gpu_watts FROM gpusm WHERE model = ?';
+          const ramQuery = 'SELECT avg_watt_usage FROM ram WHERE ddr_generation = ?';
 
           queryDatabase(cpuQuery, [device.cpu], (err, cpuResults) => {
             if (err) {
@@ -1444,7 +1473,18 @@ app.get('/displayuserM', authenticateToken, (req, res) => {
                 specifications.gpu_watts = gpuResults[0].gpu_watts;
               }
 
-              res.status(200).json({ user: { ...user, specifications }, currentDevice: device });
+              queryDatabase(ramQuery, [device.ram], (err, ramResults) => {
+                if (err) {
+                  console.error('Error querying RAM database:', err);
+                  return res.status(500).json({ error: 'RAM database error' });
+                }
+
+                if (ramResults.length > 0) {
+                  specifications.ram_watts = ramResults[0].avg_watt_usage;
+                }
+
+                res.status(200).json({ user: { ...user, specifications }, currentDevice: device });
+              });
             });
           });
         } else {
@@ -1966,6 +2006,91 @@ app.get('/ram-options', (req, res) => {
 
     res.status(200).json({ ramOptions });
   });
+});
+
+// New endpoint to fetch hardware wattage for Python analyzer
+app.post('/get-hardware-wattage', authenticateToken, async (req, res) => {
+  const { cpu, gpu, ram, psu, deviceType } = req.body;
+  const userId = req.user.id;
+
+  try {
+    let cpuWattage = null, gpuWattage = null, ramWattage = null, psuWattage = null;
+
+    // Determine which tables to query based on device type
+    const isMobile = deviceType === 'laptop' || deviceType === 'mobile';
+
+    // Fetch CPU wattage
+    if (cpu) {
+      const cpuTable = isMobile ? 'cpusm' : 'cpus';
+      const cpuColumn = isMobile ? 'cpu_watts' : 'avg_watt_usage';
+      const cpuQuery = `SELECT ${cpuColumn} AS wattage FROM ${cpuTable} WHERE model = ?`;
+      
+      await new Promise((resolve, reject) => {
+        queryDatabase(cpuQuery, [cpu], (err, results) => {
+          if (err) {
+            console.error('Error fetching CPU wattage:', err);
+            reject(err);
+          } else if (results.length > 0) {
+            cpuWattage = results[0].wattage;
+          }
+          resolve();
+        });
+      });
+    }
+
+    // Fetch GPU wattage
+    if (gpu) {
+      const gpuTable = isMobile ? 'gpusm' : 'gpus';
+      const gpuColumn = isMobile ? 'gpu_watts' : 'avg_watt_usage';
+      const gpuQuery = `SELECT ${gpuColumn} AS wattage FROM ${gpuTable} WHERE model = ?`;
+      
+      await new Promise((resolve, reject) => {
+        queryDatabase(gpuQuery, [gpu], (err, results) => {
+          if (err) {
+            console.error('Error fetching GPU wattage:', err);
+            reject(err);
+          } else if (results.length > 0) {
+            gpuWattage = results[0].wattage;
+          }
+          resolve();
+        });
+      });
+    }
+
+    // Fetch RAM wattage
+    if (ram) {
+      const ramQuery = 'SELECT avg_watt_usage AS wattage FROM ram WHERE ddr_generation = ?';
+      
+      await new Promise((resolve, reject) => {
+        queryDatabase(ramQuery, [ram], (err, results) => {
+          if (err) {
+            console.error('Error fetching RAM wattage:', err);
+            reject(err);
+          } else if (results.length > 0) {
+            ramWattage = results[0].wattage;
+          }
+          resolve();
+        });
+      });
+    }
+
+    // Handle PSU wattage - PSU is stored directly as a numeric value in user_devices table
+    if (psu) {
+      // PSU is already a wattage value, just convert to number
+      psuWattage = Number(psu) || null;
+    }
+
+    res.status(200).json({
+      cpu_watts: cpuWattage,
+      gpu_watts: gpuWattage,
+      ram_watts: ramWattage,
+      psu_watts: psuWattage
+    });
+
+  } catch (error) {
+    console.error('Error fetching hardware wattage:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 
 app.post('/generate-totp', async (req, res) => {
