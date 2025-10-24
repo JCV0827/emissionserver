@@ -4240,3 +4240,58 @@ app.put('/admin/project-requests/:id/reject', authenticateAdmin, (req, res) => {
     res.status(200).json({ message: 'Project request rejected successfully' });
   });
 });
+
+// New endpoint to add code emissions to project
+app.post('/add_code_emission', authenticateToken, (req, res) => {
+  const userId = req.user.id;
+  const { project_id, stage, emissions_gco2, energy_kwh, eco_score } = req.body;
+
+  // Check if project exists and user has access
+  const checkQuery = `
+    SELECT id FROM user_history WHERE id = ? AND (user_id = ? OR id IN (SELECT project_id FROM project_members WHERE user_id = ?))
+  `;
+
+  queryDatabase(checkQuery, [project_id, userId, userId], (err, results) => {
+    if (err) {
+      console.error('Error checking project access:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'Project not found or no access' });
+    }
+
+    // Insert new row for code emissions
+    const insertQuery = `
+      INSERT INTO user_history (
+        user_id, organization, project_name, project_description,
+        session_duration, carbon_emit, stage, status,
+        stage_duration, stage_start_date, stage_due_date,
+        project_start_date, project_due_date
+      ) VALUES (
+        (SELECT user_id FROM user_history WHERE id = ?),
+        (SELECT organization FROM user_history WHERE id = ?),
+        (SELECT project_name FROM user_history WHERE id = ?),
+        (SELECT project_description FROM user_history WHERE id = ?),
+        0, ?, ?, 'Calculated',
+        (SELECT stage_duration FROM user_history WHERE id = ?),
+        (SELECT stage_start_date FROM user_history WHERE id = ?),
+        (SELECT stage_due_date FROM user_history WHERE id = ?),
+        (SELECT project_start_date FROM user_history WHERE id = ?),
+        (SELECT project_due_date FROM user_history WHERE id = ?)
+      )
+    `;
+
+    queryDatabase(insertQuery, [
+      project_id, project_id, project_id, project_id,
+      emissions_gco2, stage, project_id, project_id, project_id, project_id, project_id
+    ], (err, results) => {
+      if (err) {
+        console.error('Error inserting code emission:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+
+      res.status(200).json({ message: 'Code emission added successfully' });
+    });
+  });
+});
