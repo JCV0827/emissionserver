@@ -2492,6 +2492,7 @@ app.get('/user_project_display_combined', authenticateToken, (req, res) => {
         uh.project_description,
         uh.session_duration, 
         uh.carbon_emit, 
+        uh.code_analysis_emit,
         uh.status,
         uh.stage_duration, 
         uh.stage_start_date, 
@@ -2536,6 +2537,159 @@ app.get('/user_project_display_combined', authenticateToken, (req, res) => {
       
       res.status(200).json({ projects: processedProjects });
     });
+  });
+});
+
+// Endpoint to add code analysis to a project stage
+app.post('/add_code_analysis', authenticateToken, (req, res) => {
+  const { project_id, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity } = req.body;
+  const userId = req.user.id;
+
+  if (!project_id || !stage || emissions_gco2 === undefined || energy_kwh === undefined) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  // Start transaction
+  executeTransaction((connection, callback) => {
+    // First, verify the project belongs to the user or user is a member
+    const verifyQuery = `
+      SELECT uh.id, uh.project_name, uh.code_analysis_emit, uh.project_id
+      FROM user_history uh
+      LEFT JOIN project_members pm ON uh.id = pm.project_id AND pm.user_id = ?
+      WHERE uh.id = ? AND uh.stage = ? 
+      AND (uh.user_id = ? OR pm.user_id = ?)
+      LIMIT 1
+    `;
+    
+    connection.query(verifyQuery, [userId, project_id, stage, userId, userId], (err, results) => {
+      if (err) return callback(err);
+      
+      if (results.length === 0) {
+        return callback(new Error('Project not found or access denied'));
+      }
+
+      const project = results[0];
+      const newCodeAnalysisEmit = (project.code_analysis_emit || 0) + emissions_gco2;
+
+      // Insert into code_analysis_history
+      const insertHistoryQuery = `
+        INSERT INTO code_analysis_history 
+        (user_id, project_id, project_name, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      
+      connection.query(
+        insertHistoryQuery,
+        [userId, project.project_id, project.project_name, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity],
+        (err, insertResult) => {
+          if (err) return callback(err);
+
+          // Update user_history with accumulated code_analysis_emit
+          const updateQuery = `
+            UPDATE user_history 
+            SET code_analysis_emit = ?
+            WHERE id = ? AND stage = ?
+          `;
+          
+          connection.query(updateQuery, [newCodeAnalysisEmit, project_id, stage], (err) => {
+            if (err) return callback(err);
+            
+            callback(null, {
+              success: true,
+              analysis_id: insertResult.insertId,
+              accumulated_emissions: newCodeAnalysisEmit,
+              accumulated_energy: energy_kwh
+            });
+          });
+        }
+      );
+    });
+  }, (err, result) => {
+    if (err) {
+      console.error('Error adding code analysis:', err);
+      return res.status(500).json({ error: err.message || 'Failed to add code analysis' });
+    }
+    res.json(result);
+  });
+});
+
+// Endpoint to get all code analyses for a project stage
+app.get('/code_analyses/:projectId/:stage', authenticateToken, (req, res) => {
+  const { projectId, stage } = req.params;
+  const userId = req.user.id;
+
+  const query = `
+    SELECT cah.*, u.name as user_name, u.email as user_email
+    FROM code_analysis_history cah
+    JOIN users u ON cah.user_id = u.id
+    WHERE cah.project_id = (
+      SELECT project_id FROM user_history WHERE id = ? LIMIT 1
+    ) AND cah.stage = ?
+    AND (cah.user_id = ? OR EXISTS (
+      SELECT 1 FROM project_members pm 
+      WHERE pm.project_id = ? AND pm.user_id = ?
+    ))
+    ORDER BY cah.analysis_date DESC
+  `;
+
+  queryDatabase(query, [projectId, stage, userId, projectId, userId], (err, results) => {
+    if (err) {
+      console.error('Error fetching code analyses:', err);
+      return res.status(500).json({ error: 'Failed to fetch code analyses' });
+    }
+    res.json({ analyses: results });
+  });
+});
+
+// Endpoint to delete a code analysis
+app.delete('/code_analysis/:id', authenticateToken, (req, res) => {
+  const analysisId = req.params.id;
+  const userId = req.user.id;
+
+  executeTransaction((connection, callback) => {
+    // First, get the analysis details
+    const getAnalysisQuery = `
+      SELECT * FROM code_analysis_history 
+      WHERE id = ? AND user_id = ?
+    `;
+    
+    connection.query(getAnalysisQuery, [analysisId, userId], (err, results) => {
+      if (err) return callback(err);
+      
+      if (results.length === 0) {
+        return callback(new Error('Analysis not found or access denied'));
+      }
+
+      const analysis = results[0];
+
+      // Delete the analysis
+      const deleteQuery = 'DELETE FROM code_analysis_history WHERE id = ?';
+      connection.query(deleteQuery, [analysisId], (err) => {
+        if (err) return callback(err);
+
+        // Update user_history by subtracting the emissions
+        const updateQuery = `
+          UPDATE user_history 
+          SET code_analysis_emit = GREATEST(0, code_analysis_emit - ?)
+          WHERE project_id = ? AND stage = ?
+        `;
+        
+        connection.query(
+          updateQuery,
+          [analysis.emissions_gco2, analysis.project_id, analysis.stage],
+          (err) => {
+            if (err) return callback(err);
+            callback(null, { success: true, message: 'Analysis deleted successfully' });
+          }
+        );
+      });
+    });
+  }, (err, result) => {
+    if (err) {
+      console.error('Error deleting code analysis:', err);
+      return res.status(500).json({ error: err.message || 'Failed to delete code analysis' });
+    }
+    res.json(result);
   });
 });
 
@@ -2746,6 +2900,157 @@ app.get('/compare_devices', authenticateToken, async (req, res) => {
     console.error('Error processing device comparison:', error);
     return res.status(500).json({ error: 'Error processing device data' });
   }
+});
+
+// Endpoint to add code analysis to a project stage
+app.post('/add_code_analysis', authenticateToken, (req, res) => {
+  const { project_id, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity } = req.body;
+  const userId = req.user.userId;
+
+  if (!project_id || !stage || emissions_gco2 === undefined || energy_kwh === undefined) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  // Start transaction
+  executeTransaction((connection, callback) => {
+    // First, verify the project belongs to the user or user is a member
+    const verifyQuery = `
+      SELECT uh.id, uh.project_name, uh.code_analysis_emit 
+      FROM user_history uh
+      LEFT JOIN project_members pm ON uh.project_id = pm.project_id AND pm.user_id = ?
+      WHERE uh.project_id = ? AND uh.stage = ? 
+      AND (uh.user_id = ? OR pm.user_id = ?)
+      LIMIT 1
+    `;
+    
+    connection.query(verifyQuery, [userId, project_id, stage, userId, userId], (err, results) => {
+      if (err) return callback(err);
+      
+      if (results.length === 0) {
+        return callback(new Error('Project not found or access denied'));
+      }
+
+      const project = results[0];
+      const newCodeAnalysisEmit = (project.code_analysis_emit || 0) + emissions_gco2;
+
+      // Insert into code_analysis_history
+      const insertHistoryQuery = `
+        INSERT INTO code_analysis_history 
+        (user_id, project_id, project_name, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      
+      connection.query(
+        insertHistoryQuery,
+        [userId, project_id, project.project_name, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity],
+        (err, insertResult) => {
+          if (err) return callback(err);
+
+          // Update user_history with accumulated code_analysis_emit
+          const updateQuery = `
+            UPDATE user_history 
+            SET code_analysis_emit = ?
+            WHERE project_id = ? AND stage = ? AND (user_id = ? OR id = ?)
+          `;
+          
+          connection.query(updateQuery, [newCodeAnalysisEmit, project_id, stage, userId, project.id], (err) => {
+            if (err) return callback(err);
+            
+            callback(null, {
+              success: true,
+              analysis_id: insertResult.insertId,
+              accumulated_emissions: newCodeAnalysisEmit,
+              accumulated_energy: energy_kwh
+            });
+          });
+        }
+      );
+    });
+  }, (err, result) => {
+    if (err) {
+      console.error('Error adding code analysis:', err);
+      return res.status(500).json({ error: err.message || 'Failed to add code analysis' });
+    }
+    res.json(result);
+  });
+});
+
+// Endpoint to get all code analyses for a project stage
+app.get('/code_analyses/:projectId/:stage', authenticateToken, (req, res) => {
+  const { projectId, stage } = req.params;
+  const userId = req.user.userId;
+
+  const query = `
+    SELECT cah.*, u.name as user_name, u.email as user_email
+    FROM code_analysis_history cah
+    JOIN users u ON cah.user_id = u.id
+    WHERE cah.project_id = ? AND cah.stage = ?
+    AND (cah.user_id = ? OR EXISTS (
+      SELECT 1 FROM project_members pm 
+      WHERE pm.project_id = ? AND pm.user_id = ?
+    ))
+    ORDER BY cah.analysis_date DESC
+  `;
+
+  queryDatabase(query, [projectId, stage, userId, projectId, userId], (err, results) => {
+    if (err) {
+      console.error('Error fetching code analyses:', err);
+      return res.status(500).json({ error: 'Failed to fetch code analyses' });
+    }
+    res.json({ analyses: results });
+  });
+});
+
+// Endpoint to delete a code analysis
+app.delete('/code_analysis/:id', authenticateToken, (req, res) => {
+  const analysisId = req.params.id;
+  const userId = req.user.userId;
+
+  executeTransaction((connection, callback) => {
+    // First, get the analysis details
+    const getAnalysisQuery = `
+      SELECT * FROM code_analysis_history 
+      WHERE id = ? AND user_id = ?
+    `;
+    
+    connection.query(getAnalysisQuery, [analysisId, userId], (err, results) => {
+      if (err) return callback(err);
+      
+      if (results.length === 0) {
+        return callback(new Error('Analysis not found or access denied'));
+      }
+
+      const analysis = results[0];
+
+      // Delete the analysis
+      const deleteQuery = 'DELETE FROM code_analysis_history WHERE id = ?';
+      connection.query(deleteQuery, [analysisId], (err) => {
+        if (err) return callback(err);
+
+        // Update user_history by subtracting the emissions
+        const updateQuery = `
+          UPDATE user_history 
+          SET code_analysis_emit = GREATEST(0, code_analysis_emit - ?)
+          WHERE project_id = ? AND stage = ?
+        `;
+        
+        connection.query(
+          updateQuery,
+          [analysis.emissions_gco2, analysis.project_id, analysis.stage],
+          (err) => {
+            if (err) return callback(err);
+            callback(null, { success: true, message: 'Analysis deleted successfully' });
+          }
+        );
+      });
+    });
+  }, (err, result) => {
+    if (err) {
+      console.error('Error deleting code analysis:', err);
+      return res.status(500).json({ error: err.message || 'Failed to delete code analysis' });
+    }
+    res.json(result);
+  });
 });
 
 // ALL admin endpoints
@@ -4238,60 +4543,5 @@ app.put('/admin/project-requests/:id/reject', authenticateAdmin, (req, res) => {
     }
 
     res.status(200).json({ message: 'Project request rejected successfully' });
-  });
-});
-
-// New endpoint to add code emissions to project
-app.post('/add_code_emission', authenticateToken, (req, res) => {
-  const userId = req.user.id;
-  const { project_id, stage, emissions_gco2, energy_kwh, eco_score } = req.body;
-
-  // Check if project exists and user has access
-  const checkQuery = `
-    SELECT id FROM user_history WHERE id = ? AND (user_id = ? OR id IN (SELECT project_id FROM project_members WHERE user_id = ?))
-  `;
-
-  queryDatabase(checkQuery, [project_id, userId, userId], (err, results) => {
-    if (err) {
-      console.error('Error checking project access:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
-
-    if (results.length === 0) {
-      return res.status(404).json({ error: 'Project not found or no access' });
-    }
-
-    // Insert new row for code emissions
-    const insertQuery = `
-      INSERT INTO user_history (
-        user_id, organization, project_name, project_description,
-        session_duration, carbon_emit, stage, status,
-        stage_duration, stage_start_date, stage_due_date,
-        project_start_date, project_due_date
-      ) VALUES (
-        (SELECT user_id FROM user_history WHERE id = ?),
-        (SELECT organization FROM user_history WHERE id = ?),
-        (SELECT project_name FROM user_history WHERE id = ?),
-        (SELECT project_description FROM user_history WHERE id = ?),
-        0, ?, ?, 'Calculated',
-        (SELECT stage_duration FROM user_history WHERE id = ?),
-        (SELECT stage_start_date FROM user_history WHERE id = ?),
-        (SELECT stage_due_date FROM user_history WHERE id = ?),
-        (SELECT project_start_date FROM user_history WHERE id = ?),
-        (SELECT project_due_date FROM user_history WHERE id = ?)
-      )
-    `;
-
-    queryDatabase(insertQuery, [
-      project_id, project_id, project_id, project_id,
-      emissions_gco2, stage, project_id, project_id, project_id, project_id, project_id
-    ], (err, results) => {
-      if (err) {
-        console.error('Error inserting code emission:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-
-      res.status(200).json({ message: 'Code emission added successfully' });
-    });
   });
 });
