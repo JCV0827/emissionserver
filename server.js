@@ -123,11 +123,11 @@ createConnection();
 
 // Utility function to check and update project completion status
 const checkAndUpdateProjectCompletion = (projectId, callback) => {
-  // Step 1: Get all project members excluding project_owner role
+  // Step 1: Get all project members
   const getMembersQuery = `
     SELECT user_id, progress_status, role
     FROM project_members 
-    WHERE project_id = ? AND role != 'project_owner'
+    WHERE project_id = ?
   `;
   console.log(`Checking project completion for project ID: ${projectId}`);
   
@@ -140,13 +140,13 @@ const checkAndUpdateProjectCompletion = (projectId, callback) => {
     console.log(`Found ${members.length} contributing members for project ${projectId}`);
     console.log('Member statuses:', members.map(m => `${m.user_id}: ${m.progress_status} (${m.role})`));
 
-    // If there are no contributing members, we can't determine completion
+    // If there are no members, we can't determine completion
     if (members.length === 0) {
-      console.log(`Project ${projectId} has no contributing members.`);
+      console.log(`Project ${projectId} has no members.`);
       return callback(null, false);
     }
 
-    // Step 2: Check if all contributing members have 'Stage Complete' status
+    // Step 2: Check if all members have 'Stage Complete' status
     const allCompleted = members.every(member => member.progress_status === 'Stage Complete');
     console.log(`All members completed: ${allCompleted}`);
     
@@ -169,7 +169,8 @@ const checkAndUpdateProjectCompletion = (projectId, callback) => {
       });
     } else {
       callback(null, false);
-    }  });
+    }
+  });
 };
 
 // Emission factors utilities (global regions support)
@@ -1603,12 +1604,11 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
           });
         }
 
-        // Update current user's progress status to Stage Complete (but don't change current_stage)
-        // Only update if the user is NOT a project_owner
+        // Update current user's progress status to Stage Complete
         const updateUserProgressQuery = `
           UPDATE project_members 
           SET progress_status = 'Stage Complete'
-          WHERE project_id = ? AND user_id = ? AND role != 'project_owner'`;
+          WHERE project_id = ? AND user_id = ?`;
           
         queryDatabase(updateUserProgressQuery, [projectId, userId], (err, updateResult) => {
           if (err) {
