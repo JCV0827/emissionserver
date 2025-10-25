@@ -3246,18 +3246,20 @@ app.get('/emission_data', authenticateAdmin, (req, res) => {
 
   let query;
   if (viewBy === 'individual') {
+    // Use the project's organization (from user_history) rather than the user's profile organization
     query = `
-      SELECT u.name, u.email AS user, u.organization, SUM(uh.carbon_emit) AS total_carbon_emit
+      SELECT u.name, u.email AS user, uh.organization, SUM(uh.carbon_emit) AS total_carbon_emit
       FROM user_history uh
       JOIN users u ON uh.user_id = u.id
-      GROUP BY u.name, u.email, u.organization
+      GROUP BY u.name, u.email, uh.organization
     `;
   } else {
+    // Organization view should reflect the project organization tracked on user_history rows
     query = `
-      SELECT u.organization, u.name, u.email AS user, SUM(uh.carbon_emit) AS total_carbon_emit
+      SELECT uh.organization, u.name, u.email AS user, SUM(uh.carbon_emit) AS total_carbon_emit
       FROM user_history uh
       JOIN users u ON uh.user_id = u.id
-      GROUP BY u.organization, u.name, u.email
+      GROUP BY uh.organization, u.name, u.email
     `;
   }
 
