@@ -577,9 +577,9 @@ app.post('/user_history', authenticateToken, (req, res) => {
       user_id, organization, project_name, project_description, 
       session_duration, carbon_emit, stage, status,
       stage_duration, stage_start_date, stage_due_date,
-      project_start_date, project_due_date
+      project_start_date, project_due_date, emission_source
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'device')
   `;
 
   queryDatabase(query, [
@@ -4543,5 +4543,54 @@ app.put('/admin/project-requests/:id/reject', authenticateAdmin, (req, res) => {
     }
 
     res.status(200).json({ message: 'Project request rejected successfully' });
+  });
+});
+
+// New endpoint to save code emissions to user_history
+app.post('/save_code_emission', authenticateToken, (req, res) => {
+  const { project_id, stage, emissions_gco2, energy_kwh, eco_score } = req.body;
+  const userId = req.user.id;
+
+  if (!project_id || !stage || emissions_gco2 == null) {
+    return res.status(400).json({ error: 'Missing required fields: project_id, stage, emissions_gco2' });
+  }
+
+  // Step 1: Determine the project's current stage
+  const getCurrentStageQuery = `
+    SELECT stage FROM user_history 
+    WHERE project_id = ? AND user_id = ? AND status = 'In Progress' 
+    ORDER BY created_at DESC LIMIT 1
+  `;
+  queryDatabase(getCurrentStageQuery, [project_id, userId], (err, results) => {
+    if (err) return res.status(500).json({ error: 'Database error' });
+    if (results.length === 0) {
+      return res.status(400).json({ error: 'Project not active or does not exist' });
+    }
+
+    const currentStage = results[0].stage;
+    const stageOrder = {
+      'Design: Creating the software architecture': 1,
+      'Development: Writing the actual code': 2,
+      'Testing: Ensuring the software works as expected': 3
+    };
+    const currentOrder = stageOrder[currentStage];
+    const requestedOrder = stageOrder[stage];
+
+    if (!requestedOrder || requestedOrder > currentOrder) {
+      return res.status(400).json({ error: `Cannot add to '${stage}'; project is at '${currentStage}'` });
+    }
+
+    // Step 2: Insert the code emission
+    const insertQuery = `
+      INSERT INTO user_history (user_id, organization, project_name, project_description, session_duration, carbon_emit, stage, status, project_id, created_at, stage_duration, stage_start_date, stage_due_date, project_start_date, project_due_date, external_owner_email, emission_source)
+      SELECT user_id, organization, project_name, project_description, 0, ?, ?, 'Completed', project_id, NOW(), stage_duration, stage_start_date, stage_due_date, project_start_date, project_due_date, external_owner_email, 'code'
+      FROM user_history 
+      WHERE project_id = ? AND user_id = ? AND status = 'In Progress' 
+      ORDER BY created_at DESC LIMIT 1
+    `;
+    queryDatabase(insertQuery, [emissions_gco2, stage, project_id, userId], (err) => {
+      if (err) return res.status(500).json({ error: 'Failed to save emission' });
+      res.json({ message: 'Code emission saved successfully' });
+    });
   });
 });
