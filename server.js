@@ -4375,36 +4375,47 @@ app.post('/add_code_analysis', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: `Stage not reached yet. Current stage is "${current_stage}".` });
     }
 
-    // Insert a new user_history row representing this code analysis
-    const insertSql = `
-      INSERT INTO user_history (
-        user_id, organization, project_name, project_description,
-        session_duration, carbon_emit, stage, status,
-        stage_duration, stage_start_date, stage_due_date,
-        project_start_date, project_due_date,
-        project_id, entry_type, is_deleted, energy_kwh, eco_score, time_complexity, space_complexity, carbon_unit, source
-      ) VALUES (
-        (SELECT user_id FROM user_history WHERE id = ?),
-        (SELECT organization FROM user_history WHERE id = ?),
-        (SELECT project_name FROM user_history WHERE id = ?),
-        (SELECT project_description FROM user_history WHERE id = ?),
-        0, ?, ?, 'Calculated',
-        (SELECT stage_duration FROM user_history WHERE id = ?),
-        (SELECT stage_start_date FROM user_history WHERE id = ?),
-        (SELECT stage_due_date FROM user_history WHERE id = ?),
-        (SELECT project_start_date FROM user_history WHERE id = ?),
-        (SELECT project_due_date FROM user_history WHERE id = ?),
-        ?, 'code', 0, ?, ?, ?, ?, 'gco2', 'code_calculator'
-      )`;
+    // Fetch base project properties in a separate query to avoid MySQL 1093 error
+    const baseSql = `SELECT user_id, organization, project_name, project_description,
+                            stage_duration, stage_start_date, stage_due_date,
+                            project_start_date, project_due_date, status
+                     FROM user_history WHERE id = ? LIMIT 1`;
 
-    const params = [
-      project_id, project_id, project_id, project_id,
-      emissions_gco2, stage,
-      project_id, project_id, project_id, project_id, project_id,
-      project_id, energy_kwh, eco_score || null, time_complexity || null, space_complexity || null
-    ];
+    queryDatabase(baseSql, [project_id], (baseErr, baseRows) => {
+      if (baseErr) {
+        console.error('Error fetching project base row:', baseErr);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      if (!baseRows || baseRows.length === 0) {
+        return res.status(404).json({ error: 'Project not found' });
+      }
+      const base = baseRows[0];
 
-    queryDatabase(insertSql, params, (err, result) => {
+      // Insert a new user_history row representing this code analysis
+      const insertSql = `
+        INSERT INTO user_history (
+          user_id, organization, project_name, project_description,
+          session_duration, carbon_emit, stage, status,
+          stage_duration, stage_start_date, stage_due_date,
+          project_start_date, project_due_date,
+          project_id, entry_type, is_deleted, energy_kwh, eco_score, time_complexity, space_complexity, carbon_unit, source
+        ) VALUES (
+          ?, ?, ?, ?,
+          0, ?, ?, ?,
+          ?, ?, ?,
+          ?, ?,
+          ?, 'code', 0, ?, ?, ?, ?, 'gco2', 'code_calculator'
+        )`;
+
+      const params = [
+        base.user_id, base.organization, base.project_name, base.project_description,
+        emissions_gco2, stage, (base.status || 'Calculated'),
+        base.stage_duration, base.stage_start_date, base.stage_due_date,
+        base.project_start_date, base.project_due_date,
+        project_id, energy_kwh, eco_score || null, time_complexity || null, space_complexity || null
+      ];
+
+      queryDatabase(insertSql, params, (err, result) => {
       if (err) {
         console.error('Error inserting code analysis:', err);
         // Likely missing columns; surface a helpful message
@@ -4421,6 +4432,7 @@ app.post('/add_code_analysis', authenticateToken, async (req, res) => {
         }
         const accumulated = (sumRows && sumRows[0] && sumRows[0].accumulated_emissions) || 0;
         return res.status(201).json({ message: 'Code analysis added', id: result.insertId, accumulated_emissions: accumulated });
+      });
       });
     });
   } catch (e) {
