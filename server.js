@@ -4151,37 +4151,51 @@ app.put('/admin/project-requests/:id/approve', authenticateAdmin, (req, res) => 
 
         const request = requests[0];
 
-        // Create the project based on the request with explicit 0 values for session_duration and carbon_emit
-        const createProjectQuery = `
-          INSERT INTO user_history (
-            user_id, project_name, project_description, stage,
-            organization, stage_duration, stage_start_date, stage_due_date,
-            project_start_date, project_due_date, status, session_duration, carbon_emit
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'In Progress', 0, 0)
-        `;
-
-        const projectValues = [
-          request.user_id,
-          request.title,
-          request.description,
-          request.project_stage,
-          request.organization,
-          request.stage_duration,
-          request.stage_start_date,
-          request.stage_due_date,
-          request.project_start_date,
-          request.project_due_date
-        ];
-
-        queryDatabase(createProjectQuery, projectValues, (err, projectResult) => {
-          if (err) {
+        // Determine the organization using the project leader's (requesting user's) organization
+        const getLeaderOrgQuery = `SELECT organization FROM users WHERE id = ?`;
+        queryDatabase(getLeaderOrgQuery, [request.user_id], (orgErr, orgResults) => {
+          if (orgErr) {
             return connection.rollback(() => {
-              console.error('Error creating project:', err);
+              console.error('Error fetching leader organization:', orgErr);
               res.status(500).json({ error: 'Database error' });
             });
           }
 
-          const projectId = projectResult.insertId;
+          const leaderOrganization = (orgResults && orgResults.length > 0 && orgResults[0].organization)
+            ? orgResults[0].organization
+            : (request.organization || 'External');
+
+          // Create the project based on the request with explicit 0 values for session_duration and carbon_emit
+          const createProjectQuery = `
+            INSERT INTO user_history (
+              user_id, project_name, project_description, stage,
+              organization, stage_duration, stage_start_date, stage_due_date,
+              project_start_date, project_due_date, status, session_duration, carbon_emit
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'In Progress', 0, 0)
+          `;
+
+          const projectValues = [
+            request.user_id,
+            request.title,
+            request.description,
+            request.project_stage,
+            leaderOrganization,
+            request.stage_duration,
+            request.stage_start_date,
+            request.stage_due_date,
+            request.project_start_date,
+            request.project_due_date
+          ];
+
+          queryDatabase(createProjectQuery, projectValues, (err, projectResult) => {
+            if (err) {
+              return connection.rollback(() => {
+                console.error('Error creating project:', err);
+                res.status(500).json({ error: 'Database error' });
+              });
+            }
+
+            const projectId = projectResult.insertId;
           
           // Update the project_id field to be the same as the project's ID
           const updateProjectIdQuery = `
@@ -4509,4 +4523,5 @@ app.delete('/code_analysis/:id', authenticateToken, (req, res) => {
       });
     });
   });
+});
 });
