@@ -123,11 +123,11 @@ createConnection();
 
 // Utility function to check and update project completion status
 const checkAndUpdateProjectCompletion = (projectId, callback) => {
-  // Step 1: Get all project members
+  // Step 1: Get all contributing members (exclude project_owner from completion logic)
   const getMembersQuery = `
     SELECT user_id, progress_status, role
     FROM project_members 
-    WHERE project_id = ?
+    WHERE project_id = ? AND role <> 'project_owner'
   `;
   console.log(`Checking project completion for project ID: ${projectId}`);
   
@@ -137,7 +137,7 @@ const checkAndUpdateProjectCompletion = (projectId, callback) => {
       return callback(err, false);
     }
 
-    console.log(`Found ${members.length} contributing members for project ${projectId}`);
+    console.log(`Found ${members.length} contributing members (excluding project_owner) for project ${projectId}`);
     console.log('Member statuses:', members.map(m => `${m.user_id}: ${m.progress_status} (${m.role})`));
 
     // If there are no members, we can't determine completion
@@ -146,7 +146,7 @@ const checkAndUpdateProjectCompletion = (projectId, callback) => {
       return callback(null, false);
     }
 
-    // Step 2: Check if all members have 'Stage Complete' status
+    // Step 2: Check if all contributing members have 'Stage Complete' status
     const allCompleted = members.every(member => member.progress_status === 'Stage Complete');
     console.log(`All members completed: ${allCompleted}`);
     
@@ -1905,7 +1905,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                       const getCompletedUsersQuery = `
                         SELECT COUNT(*) as count 
                         FROM project_members 
-                        WHERE project_id = ? AND progress_status = 'Stage Complete'
+                        WHERE project_id = ? AND progress_status = 'Stage Complete' AND role <> 'project_owner'
                       `;
                       
                       queryDatabase(getCompletedUsersQuery, [projectId], (err, completedResult) => {
@@ -1919,7 +1919,7 @@ app.post('/complete_project/:id', authenticateToken, (req, res) => {
                         const totalMembersQuery = `
                           SELECT COUNT(*) as count 
                           FROM project_members 
-                          WHERE project_id = ?
+                          WHERE project_id = ? AND role <> 'project_owner'
                         `;
                         
                         queryDatabase(totalMembersQuery, [projectId], (err, totalResult) => {
