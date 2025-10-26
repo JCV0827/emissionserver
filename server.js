@@ -6,17 +6,10 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const mysql = require('mysql2');
 const path = require('path');
+const nodemailer = require('nodemailer');
+const speakeasy = require('speakeasy');
+const qrcode = require('qrcode');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
-
-// Import route modules
-const createAuthRoutes = require('./routes/auth');
-const createProjectRoutes = require('./routes/projects');
-const createEmissionRoutes = require('./routes/emissions');
-const createUtilityRoutes = require('./routes/utilities');
-const createAdminRoutes = require('./routes/admin');
-const createCollaborationRoutes = require('./routes/collaboration');
-const createCodeAnalysisRoutes = require('./routes/codeAnalysis');
-const createAdvancedAdminRoutes = require('./routes/advancedAdmin');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
