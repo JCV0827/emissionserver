@@ -902,7 +902,7 @@ app.put('/archive_project/:id', authenticateToken, (req, res) => {
 // Root route
 app.get('/', (req, res) => {
   res.status(200).json({ 
-    message: 'Emission Server API is running',
+    message: 'EmissionSense API v2.0 running',
     status: 'OK',
     timestamp: new Date().toISOString()
   });
