@@ -640,7 +640,7 @@ app.get('/user_projects', authenticateToken, (req, res) => {
   const query = `
     SELECT id, organization, project_name, project_description, session_duration, carbon_emit, stage, status 
     FROM user_history 
-    WHERE user_id = ? AND status <> 'Complete'
+    WHERE user_id = ? AND status <> 'Complete' AND project_id IS NULL
   `;
 
   queryDatabase(query, [userId], (err, results) => {
@@ -1996,7 +1996,7 @@ app.get('/user_projects_only', authenticateToken, (req, res) => {
   const query = `
     SELECT id, project_name, project_description, session_duration, carbon_emit, status, stage
     FROM user_history
-    WHERE user_id = ?
+    WHERE user_id = ? AND project_id IS NULL
   `;
 
   queryDatabase(query, [userId], (err, results) => {
@@ -2486,7 +2486,7 @@ app.get('/user_project_display_combined', authenticateToken, (req, res) => {
     FROM 
       user_history
     WHERE 
-      user_id = ? AND status NOT IN ('Archived')
+      user_id = ? AND status NOT IN ('Archived') AND project_id IS NULL
   `;
 
   queryDatabase(getAllProjectIdsQuery, [userId, userId], (err, projectIds) => {
@@ -2538,6 +2538,7 @@ app.get('/user_project_display_combined', authenticateToken, (req, res) => {
         project_members pm ON uh.id = pm.project_id AND pm.user_id = ?      WHERE 
         uh.id IN (${idPlaceholders})
         AND uh.status NOT IN ('Archived')
+        AND uh.project_id IS NULL
     `;
 
     const queryParams = [userId, ...ids];
