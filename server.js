@@ -4350,6 +4350,12 @@ app.post('/add_code_calculated', authenticateToken, async (req, res) => {
   console.log('=== /add_code_calculated called ===');
   console.log('Request body:', req.body);
   console.log('User ID:', userId);
+  console.log('Destructured values:');
+  console.log('  project_id (type:', typeof project_id, '):', project_id);
+  console.log('  stage (type:', typeof stage, '):', stage);
+  console.log('  stage === "Design: Creating the software architecture":', stage === 'Design: Creating the software architecture');
+  console.log('  stage === "Development: Writing the actual code":', stage === 'Development: Writing the actual code');
+  console.log('  stage === "Testing: Ensuring the software works as expected":', stage === 'Testing: Ensuring the software works as expected');
 
   // Validate required fields
   if (!project_id || !stage) {
@@ -4476,7 +4482,9 @@ app.post('/add_code_calculated', authenticateToken, async (req, res) => {
       console.log('  project_name:', params[2]);
       console.log('  project_description:', params[3]);
       console.log('  emissions_gco2 (carbon_emit):', params[4]);
-      console.log('  stage (REQUESTED):', params[5]);
+      console.log('  stage (REQUESTED - FROM PARAMS[5]):', params[5]);
+      console.log('  stage variable from request:', stage);
+      console.log('  ARE THEY EQUAL?:', params[5] === stage);
       console.log('  status:', params[6]);
       console.log('  stage_duration:', params[7]);
       console.log('  stage_start_date:', params[8]);
