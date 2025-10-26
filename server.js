@@ -913,9 +913,6 @@ app.get('/protected', authenticateToken, (req, res) => {
   res.status(200).json({ message: 'This is a protected route', user: req.user });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
 
 // Endpoint to find a project by name and description
 app.post('/find_project', authenticateToken, (req, res) => {
@@ -4581,6 +4578,7 @@ app.delete('/code_analysis/:id', authenticateToken, (req, res) => {
   });
 });
 });
+
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
