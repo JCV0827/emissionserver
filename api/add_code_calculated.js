@@ -1,10 +1,19 @@
 const express = require('express');
+const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const mysql = require('mysql2');
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
 const app = express();
 app.use(express.json());
+
+// Set up global CORS headers
+app.use(cors({
+  origin: 'https://emission-vert.vercel.app',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your_secret_key';
 
