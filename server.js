@@ -913,6 +913,42 @@ app.get('/protected', authenticateToken, (req, res) => {
   res.status(200).json({ message: 'This is a protected route', user: req.user });
 });
 
+// Endpoint to add code calculated emissions
+app.post('/add_code_calculated', authenticateToken, (req, res) => {
+  const { project_id, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity } = req.body;
+  const userId = req.user.id;
+
+  // Insert into code_calculations table
+  const insertQuery = `
+    INSERT INTO code_calculations (project_id, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity, user_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+  `;
+
+  queryDatabase(insertQuery, [project_id, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity, userId], (err, insertResult) => {
+    if (err) {
+      console.error('Error inserting code calculation:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    // Get accumulated emissions for the stage
+    const sumQuery = `
+      SELECT SUM(emissions_gco2) as accumulated_emissions
+      FROM code_calculations
+      WHERE project_id = ? AND stage = ?
+    `;
+
+    queryDatabase(sumQuery, [project_id, stage], (err, sumResult) => {
+      if (err) {
+        console.error('Error calculating accumulated emissions:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+
+      const accumulated_emissions = sumResult[0].accumulated_emissions || 0;
+      res.status(200).json({ accumulated_emissions });
+    });
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
