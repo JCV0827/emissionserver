@@ -4582,5 +4582,4 @@ app.delete('/code_analysis/:id', authenticateToken, (req, res) => {
 });
 });
 
-// Export for Vercel serverless
 module.exports = app;
