@@ -413,7 +413,7 @@ app.post('/register', upload.single('profilePicture'), (req, res) => {
           console.error('Error updating user with current device ID:', err);
           return res.status(500).json({ error: 'Database error' });
         }
-        
+
         const profileImageUrl = profilePicture ? `https://emission-vert.vercel.app/uploads/${profilePicture}` : null;
         res.status(200).json({ message: 'User registered successfully', profileImageUrl });
       });
@@ -911,10 +911,6 @@ app.get('/', (req, res) => {
 app.get('/protected', authenticateToken, (req, res) => {
   res.status(200).json({ message: 'This is a protected route', user: req.user });
 });
-
-// app.listen(PORT, () => {
-//   console.log(`Server running on port ${PORT}`);
-// });
 
 // Endpoint to find a project by name and description
 app.post('/find_project', authenticateToken, (req, res) => {
@@ -2024,13 +2020,14 @@ app.get('/ram-options', (req, res) => {
 
     // Create an array of RAM options
     const ramOptions = results.map(row => ({
-      label: `${row.ddr_generation}`,
-      value: row.ddr_generation.toString(),
+      label: row.ddr_generation,
+      value: row.ddr_generation
     }));
 
     res.status(200).json({ ramOptions });
   });
 });
+
 
 // New endpoint to fetch hardware wattage for Python analyzer
 app.post('/get-hardware-wattage', authenticateToken, async (req, res) => {
@@ -4259,6 +4256,7 @@ app.put('/admin/project-requests/:id/approve', authenticateAdmin, (req, res) => 
           });
         });
       });
+      });
     });
   });
 });
@@ -4579,6 +4577,7 @@ app.delete('/code_analysis/:id', authenticateToken, (req, res) => {
     });
   });
 });
-});
 
-module.exports = app;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
