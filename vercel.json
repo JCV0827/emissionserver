@@ -9,7 +9,7 @@
   "routes": [
     {
       "src": "/add_code_calculated",
-      "dest": "/api/add_code_calculated.js"
+      "dest": "/api/add_code_calculated"
     },
     {
       "src": "/(.*)",
