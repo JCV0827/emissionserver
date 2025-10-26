@@ -4346,7 +4346,7 @@ app.post('/add_code_emission', authenticateToken, (req, res) => {
 });
 
 // Add code analysis result to a project stage with gating and metadata
-app.post('/add_code_analysis', authenticateToken, async (req, res) => {
+app.post('/add_code_calculated', authenticateToken, async (req, res) => {
   const userId = req.user.id;
   const { project_id, stage, emissions_gco2, energy_kwh, eco_score, time_complexity, space_complexity } = req.body;
 
@@ -4452,7 +4452,7 @@ app.post('/add_code_analysis', authenticateToken, async (req, res) => {
       });
     });
   } catch (e) {
-    console.error('add_code_analysis failed:', e);
+    console.error('add_code_calculated failed:', e);
     return res.status(500).json({ error: 'Server error' });
   }
 });
