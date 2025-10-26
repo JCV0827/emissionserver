@@ -4,17 +4,9 @@
     {
       "src": "server.js",
       "use": "@vercel/node"
-    },
-    {
-      "src": "api/add_code_calculated.js",
-      "use": "@vercel/node"
     }
   ],
   "routes": [
-    {
-      "src": "/add_code_calculated",
-      "dest": "/api/add_code_calculated"
-    },
     {
       "src": "/(.*)",
       "dest": "server.js"
