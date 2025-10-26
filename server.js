@@ -4368,8 +4368,14 @@ app.post('/add_code_calculated', authenticateToken, async (req, res) => {
   }
 
   // Verify user is owner/member of the project
+  // Get the user's current stage (from project_members if member, else from user_history)
   const accessSql = `
-    SELECT uh.id, uh.stage as current_stage
+    SELECT 
+      uh.id, 
+      CASE 
+        WHEN pm.current_stage IS NOT NULL THEN pm.current_stage
+        ELSE uh.stage
+      END as current_stage
     FROM user_history uh
     LEFT JOIN project_members pm ON pm.project_id = uh.id AND pm.user_id = ?
     WHERE uh.id = ? AND (uh.user_id = ? OR pm.user_id IS NOT NULL)
@@ -4382,6 +4388,7 @@ app.post('/add_code_calculated', authenticateToken, async (req, res) => {
           console.error('Access check error:', err);
           return reject(err);
         }
+        console.log('Access check rows:', rows);
         resolve(rows && rows.length > 0 ? rows[0] : null);
       });
     });
@@ -4463,7 +4470,24 @@ app.post('/add_code_calculated', authenticateToken, async (req, res) => {
         time_complexity || null, space_complexity || null
       ];
 
-      console.log('Inserting code analysis with params:', params);
+      console.log('Inserting code analysis with params:');
+      console.log('  user_id:', params[0]);
+      console.log('  organization:', params[1]);
+      console.log('  project_name:', params[2]);
+      console.log('  project_description:', params[3]);
+      console.log('  emissions_gco2 (carbon_emit):', params[4]);
+      console.log('  stage (REQUESTED):', params[5]);
+      console.log('  status:', params[6]);
+      console.log('  stage_duration:', params[7]);
+      console.log('  stage_start_date:', params[8]);
+      console.log('  stage_due_date:', params[9]);
+      console.log('  project_start_date:', params[10]);
+      console.log('  project_due_date:', params[11]);
+      console.log('  project_id:', params[12]);
+      console.log('  energy_kwh:', params[13]);
+      console.log('  eco_score:', params[14]);
+      console.log('  time_complexity:', params[15]);
+      console.log('  space_complexity:', params[16]);
 
       queryDatabase(insertSql, params, (err, result) => {
         if (err) {
