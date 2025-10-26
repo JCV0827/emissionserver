@@ -4580,9 +4580,9 @@ app.delete('/code_analysis/:id', authenticateToken, (req, res) => {
 });
 
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// app.listen(PORT, () => {
+//   console.log(`Server running on port ${PORT}`);
+// });
 
 
 // Export for Vercel serverless
