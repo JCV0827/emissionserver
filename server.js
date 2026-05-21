@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
+const crypto = require('crypto');
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -203,6 +204,53 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS, // Your email password or app password
   },
 });
+
+function buildTemporarySetupToken(email) {
+  return jwt.sign({ email, purpose: 'temp-user-setup' }, JWT_SECRET, { expiresIn: '7d' });
+}
+
+function sendTemporaryUserSetupEmail({ email, name, setupToken }) {
+  const setupLink = `https://emissionserver.vercel.app/reset-password?token=${setupToken}`;
+  const displayName = name || email;
+
+  const mailOptions = {
+    from: `"EmissionSense" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: 'Set up your EmissionSense account',
+    text: `Hello ${displayName},\n\nYour EmissionSense account is ready. Set your password here: ${setupLink}\n\nThis link expires in 7 days.`,
+    html: `
+      <div style="max-width: 600px; margin: 0 auto; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+        <div style="background-color: #006241; padding: 24px; text-align: center; border-radius: 8px 8px 0 0;">
+          <h1 style="color: white; margin: 0; font-size: 28px; font-weight: 600;">EmissionSense</h1>
+        </div>
+
+        <div style="background-color: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);">
+          <h2 style="color: #1A1A1A; margin-top: 0; font-size: 24px; font-weight: 500;">Set up your account</h2>
+          <p style="color: #4a4a4a; line-height: 1.6; font-size: 16px;">Hello ${displayName},</p>
+          <p style="color: #4a4a4a; line-height: 1.6; font-size: 16px;">Your account has been created. Please set a password before logging in.</p>
+
+          <div style="text-align: center; margin: 32px 0;">
+            <a href="${setupLink}" style="background-color: #006241; color: white; padding: 14px 32px; text-decoration: none; border-radius: 6px; font-weight: 500; font-size: 16px; display: inline-block;">Set Password</a>
+          </div>
+
+          <div style="background-color: #f8f9fa; padding: 16px; border-radius: 6px; margin-top: 24px;">
+            <p style="color: #666; line-height: 1.6; font-size: 14px; margin: 0;">This link can only be used once and expires in 7 days.</p>
+          </div>
+        </div>
+      </div>
+    `,
+  };
+
+  return new Promise((resolve, reject) => {
+    transporter.sendMail(mailOptions, (err, info) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve(info);
+    });
+  });
+}
 // Canonical project stages (used for gating code analysis additions)
 const CANONICAL_STAGES = [
   'Design: Creating the software architecture',
@@ -426,10 +474,10 @@ app.post('/login', (req, res) => {
   const { email, password } = req.body;
 
   const userQuery = `
-    SELECT id, name, email, current_device_id FROM users WHERE email = ? AND password = ?
+    SELECT id, name, email, current_device_id, password, is_temporary FROM users WHERE email = ?
   `;
 
-  queryDatabase(userQuery, [email, password], (err, results) => {
+  queryDatabase(userQuery, [email], (err, results) => {
     if (err) {
       console.error('Error querying the database:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -437,6 +485,18 @@ app.post('/login', (req, res) => {
 
     if (results.length > 0) {
       const user = results[0];
+
+      if (user.is_temporary || user.password === 'temporary_password') {
+        return res.status(403).json({
+          error: 'Account setup required',
+          message: 'This account must set a password before it can log in.'
+        });
+      }
+
+      if (user.password !== password) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+
       const token = jwt.sign({ email: user.email, id: user.id }, JWT_SECRET, { expiresIn: '7d' });
 
       const deviceQuery = `
@@ -2251,7 +2311,7 @@ app.post('/resetpassword', async (req, res) => {
 
     // Update the password in the database
     queryDatabase(
-      'UPDATE users SET password = ? WHERE email = ?',
+      'UPDATE users SET password = ?, is_temporary = 0, setup_token = NULL, setup_token_expires_at = NULL WHERE email = ?',
       [newPassword, email],
       (err, result) => {
         if (err) {
@@ -3963,7 +4023,7 @@ app.post('/create_temp_user', authenticateAdmin, (req, res) => {
   const { email, organization } = req.body;
 
   // Check if user already exists
-  const checkUserQuery = 'SELECT id FROM users WHERE email = ?';
+  const checkUserQuery = 'SELECT id, name, email, is_temporary, setup_token FROM users WHERE email = ?';
   
   queryDatabase(checkUserQuery, [email], (err, results) => {
     if (err) {
@@ -3973,25 +4033,71 @@ app.post('/create_temp_user', authenticateAdmin, (req, res) => {
 
     // If user exists, return their ID
     if (results.length > 0) {
+      const existingUser = results[0];
+
+      if (existingUser.is_temporary) {
+        const setupToken = existingUser.setup_token || buildTemporarySetupToken(email);
+        const updateTokenQuery = `
+          UPDATE users
+          SET setup_token = ?, setup_token_expires_at = DATE_ADD(NOW(), INTERVAL 7 DAY)
+          WHERE email = ?
+        `;
+
+        return queryDatabase(updateTokenQuery, [setupToken, email], async (updateErr) => {
+          if (updateErr) {
+            console.error('Error refreshing temporary user token:', updateErr);
+            return res.status(500).json({ error: 'Failed to refresh temporary user setup' });
+          }
+
+          try {
+            await sendTemporaryUserSetupEmail({
+              email,
+              name: existingUser.name || email.split('@')[0],
+              setupToken
+            });
+          } catch (mailErr) {
+            console.error('Error sending temporary user setup email:', mailErr);
+          }
+
+          return res.status(200).json({
+            userId: existingUser.id,
+            message: 'Temporary user already exists; setup link refreshed',
+            isExisting: true
+          });
+        });
+      }
+
       return res.status(200).json({ 
-        userId: results[0].id,
+        userId: existingUser.id,
         message: 'User already exists',
         isExisting: true 
       });
     }
 
     // Create new temporary user
+    const tempPassword = crypto.randomBytes(32).toString('hex');
+    const setupToken = buildTemporarySetupToken(email);
     const createUserQuery = `
-      INSERT INTO users (name, email, password, organization, created_at)
-      VALUES (?, ?, 'temporary_password', ?, NOW())
+      INSERT INTO users (name, email, password, organization, created_at, is_temporary, setup_token, setup_token_expires_at)
+      VALUES (?, ?, ?, ?, NOW(), 1, ?, DATE_ADD(NOW(), INTERVAL 7 DAY))
     `;
 
     const userName = email.split('@')[0]; // Use part before @ as temporary name
 
-    queryDatabase(createUserQuery, [userName, email, organization], (err, result) => {
+    queryDatabase(createUserQuery, [userName, email, tempPassword, organization, setupToken], async (err, result) => {
       if (err) {
         console.error('Error creating temporary user:', err);
         return res.status(500).json({ error: 'Failed to create temporary user' });
+      }
+
+      try {
+        await sendTemporaryUserSetupEmail({
+          email,
+          name: userName,
+          setupToken
+        });
+      } catch (mailErr) {
+        console.error('Error sending temporary user setup email:', mailErr);
       }
 
       res.status(201).json({ 
