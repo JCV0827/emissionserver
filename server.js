@@ -4467,9 +4467,12 @@ app.post('/add_code_calculated', authenticateToken, async (req, res) => {
           ?, ?, 'gco2', 'code_calculator'
         )`;
 
+      // Convert emissions from grams to kilograms to match other emissions in the system
+      const emissions_kg = emissions_gco2 / 1000;
+
       const params = [
         base.user_id, base.organization, base.project_name, base.project_description,
-        emissions_gco2, stage, (base.status || 'In Progress'),
+        emissions_kg, stage, (base.status || 'In Progress'),
         base.stage_duration, base.stage_start_date, base.stage_due_date,
         base.project_start_date, base.project_due_date,
         project_id, energy_kwh || 0, eco_score || null, 
@@ -4519,12 +4522,12 @@ app.post('/add_code_calculated', authenticateToken, async (req, res) => {
             return res.status(201).json({ 
               message: 'Code analysis added', 
               id: result.insertId,
-              accumulated_emissions: emissions_gco2 
+              accumulated_emissions: emissions_kg 
             });
           }
 
           const accumulated = (sumRows && sumRows[0] && sumRows[0].accumulated_emissions) || 0;
-          console.log('Total accumulated emissions for stage:', accumulated);
+          console.log('Total accumulated emissions for stage (kg):', accumulated);
 
           return res.status(200).json({ 
             message: 'Code analysis added successfully', 
